@@ -1,0 +1,78 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Jackery Home Cloud",
+        "description": "Enter your Jackery Home Cloud account details.",
+        "data": {
+          "account": "Account",
+          "password": "Password",
+          "phone_uid": "Phone UID"
+        },
+        "data_description": {
+          "phone_uid": "Optional. Leave empty to let the integration generate a stable Home Assistant specific identifier."
+        }
+      },
+      "systems": {
+        "title": "Select systems",
+        "description": "Choose which Jackery systems should be added to Home Assistant.",
+        "data": {
+          "selected_systems": "Systems"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "The Jackery Home Cloud credentials need to be updated.",
+        "data": {
+          "password": "Password",
+          "phone_uid": "Phone UID"
+        },
+        "data_description": {
+          "phone_uid": "Optional. Leave empty to keep the existing phone UID."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Jackery Home Cloud",
+        "description": "Update the connection details for this account.",
+        "data": {
+          "account": "Account",
+          "password": "Password",
+          "phone_uid": "Phone UID"
+        },
+        "data_description": {
+          "phone_uid": "Optional. Leave empty to generate or keep a stable Home Assistant specific identifier."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Jackery Home Cloud API.",
+      "invalid_auth": "Authentication failed.",
+      "no_systems": "No systems were found for this account.",
+      "no_system_selected": "Select at least one system.",
+      "account_mismatch": "The account cannot be changed during reconfiguration.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This Jackery Home Cloud account is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "Reconfiguration was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Select systems",
+        "description": "Choose which systems should remain enabled in Home Assistant.",
+        "data": {
+          "selected_systems": "Systems"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Jackery Home Cloud API.",
+      "invalid_auth": "Authentication failed.",
+      "no_system_selected": "Select at least one system.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs."
+    }
+  }
+}
