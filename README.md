@@ -16,6 +16,8 @@ Comprehensive [API documentation](docs/api.md) with all API calls inspected to d
 
 ## Current status
 
+The HA integration and the collection of API calls that I originally created was carried out with and for a **Jackery HomePower 2000 Ultra**.
+
 **Version:** `0.2.0`
 
 The integration is already able to:
