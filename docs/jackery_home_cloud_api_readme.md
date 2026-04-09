@@ -185,12 +185,6 @@ Example:
 ## 🚧 Known Limitations
 
 -   Incomplete reverse engineering
--   `encrypted=true` login not implemented
+-   `encrypted=true` login (which is probably APP-integrated-only) is not implemented, traffic is transport encrypted via HTTPS
 -   MQTT topics not fully decoded
 -   API may change anytime
-
-------------------------------------------------------------------------
-
-## 📚 Related
-
-https://github.com/iLLixM/jackery_home_cloud

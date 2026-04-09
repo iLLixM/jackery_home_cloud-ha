@@ -8,8 +8,9 @@ This integration connects to the Jackery cloud backend and exposes system data f
 > This project is based on **reverse engineered** API behavior observed from the "Jackery Home" Android app.
 > It is **unofficial**, may be incomplete, and can break at any time if Jackery changes their backend.
 
-[API readme](docs/jackery_home_cloud_api_readme.md) for a quick overview
-Comprehensive [API documentation](docs/api.md) with all API calls inspected to date
+[API readme](docs/jackery_home_cloud_api_readme.md) for a quick overview.
+
+Comprehensive [API documentation](docs/api.md) with all API calls inspected to date.
 
 ---
 
@@ -191,13 +192,3 @@ If you test it, review it, or improve it: thank you.
 This repository is **not affiliated with or endorsed by Jackery**.
 
 All product names, trademarks, and brand names are the property of their respective owners.
-
----
-
-## License
-
-Add your preferred license here, for example:
-
-```text
-MIT
-```
