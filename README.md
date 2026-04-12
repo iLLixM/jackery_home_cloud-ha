@@ -78,7 +78,14 @@ In addition, diagnostic values can be exposed where useful for further reverse e
 
 ## Installation
 
-### Option 1: Manual installation
+### Option 1: HACS (Recommended)
+
+1. Make sure you have [HACS](https://hacs.xyz/) installed
+2. Add this repository as a custom repository in HACS
+3. Search for "Jackery" in the integrations section
+4. Click "Download" and restart Home Assistant
+
+### Option 2: Manual installation
 
 1. Copy the `custom_components/jackery_home_cloud` folder into your Home Assistant configuration directory.
 2. Restart Home Assistant.
@@ -86,10 +93,6 @@ In addition, diagnostic values can be exposed where useful for further reverse e
 4. Add the **Jackery Home Cloud** integration.
 5. Enter your Jackery account credentials.
 6. Select the systems you want to import.
-
-### Option 2: HACS
-
-HACS packaging is planned, but availability depends on the current repository setup and release state.
 
 ---
 
