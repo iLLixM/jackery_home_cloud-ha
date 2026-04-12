@@ -72,7 +72,7 @@ In addition, diagnostic values can be exposed where useful for further reverse e
 
 ## Screenshot
 
-![Jackery Home Cloud device view](img/jackery-home-cloud-device-view.png)
+![Jackery Home Cloud device view](/docs/img/jackery-home-cloud-device-view.png)
 
 ---
 
