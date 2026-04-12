@@ -32,7 +32,17 @@ DEFAULT_BASE_URL = (
 )
 
 API_REQUEST_TIMEOUT_SECONDS = 30
+
+# Live monitor data is still refreshed frequently so current power values stay
+# responsive in Home Assistant.
 UPDATE_INTERVAL_SECONDS = 60
+
+# Daily trend values from the cloud backend appear to be aggregated only about
+# once per hour. Refreshing them every 15 minutes is sufficient and reduces
+# unnecessary API calls while still picking up new data shortly after it becomes
+# available server-side.
+DAILY_TREND_UPDATE_INTERVAL_SECONDS = 900
+
 TREND_TYPE_DAY = "2"
 TREND_DATE_FORMAT = "%Y%m%d"
 
