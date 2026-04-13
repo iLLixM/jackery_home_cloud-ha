@@ -1,14 +1,15 @@
 {
   "domain": "jackery_home_cloud",
   "name": "Jackery Home Cloud",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "documentation": "https://github.com/iLLixM/jackery_home_cloud-ha",
   "issue_tracker": "https://github.com/iLLixM/jackery_home_cloud-ha/issues",
   "dependencies": [],
-  "codeowners": ["@iLLixM"],
+  "codeowners": [
+    "@iLLixM"
+  ],
   "config_flow": true,
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "requirements": [],
-  "icon": "icon.png"
+  "requirements": []
 }

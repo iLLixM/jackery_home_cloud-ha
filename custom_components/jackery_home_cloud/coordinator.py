@@ -70,6 +70,7 @@ class BatteryResolution:
     bms_total_div1000_kwh: float | None
     bms_list_sum_kwh: float | None
     cluster_reference_kwh: float | None
+    all_zero_sources: bool
 
 
 class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -193,6 +194,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not isinstance(previous_daily_energy, Mapping):
             previous_daily_energy = {}
 
+        previous_day_key = None
+        if isinstance(previous_bundle, Mapping):
+            previous_day_key = previous_bundle.get("trend_day_key")
+        same_day = previous_day_key == day_key
+
         daily_energy = _build_daily_energy_summary(
             system_id=system_id,
             day_key=day_key,
@@ -200,6 +206,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             trend_cluster_daily=trend_cluster_daily,
             battery_bms_daily=battery_bms_daily,
             previous_daily_energy=previous_daily_energy,
+            same_day=same_day,
         )
 
         return system_id, {
@@ -325,8 +332,14 @@ def _build_daily_energy_summary(
     trend_cluster_daily: Mapping[str, Any],
     battery_bms_daily: Mapping[str, Any],
     previous_daily_energy: Mapping[str, Any],
+    same_day: bool,
 ) -> dict[str, float | None]:
-    """Derive user facing daily energy totals from raw trend payloads."""
+    """Derive user facing daily energy totals from raw trend payloads.
+
+    The caller provides whether the previous coordinator snapshot belongs to the
+    same local system day. This prevents a legitimate midnight reset to 0 from
+    being treated as an invalid same-day decrease.
+    """
     trend_system = _first_cluster_system(trend_cluster_daily)
     trend_list = _trend_list(trend_system)
 
@@ -340,8 +353,8 @@ def _build_daily_energy_summary(
         raw_bms_total=battery_bms_daily.get("totalCharge"),
         bms_list_sum_kwh=_sum_bms_values(battery_bms_daily.get("bmsList"), "charge"),
         cluster_reference_kwh=_sum_negative_as_positive(trend_list, "batteryCharge"),
-        previous_value=_coerce_float(previous_daily_energy.get("battery_energy_charged_today")),
-        same_day=True,
+        previous_value=_coerce_float(previous_daily_energy.get("battery_energy_charged_today")) if same_day else None,
+        same_day=same_day,
     )
 
     discharged_resolution = _resolve_battery_daily_value(
@@ -352,8 +365,8 @@ def _build_daily_energy_summary(
         raw_bms_total=battery_bms_daily.get("totalDisCharge"),
         bms_list_sum_kwh=_sum_bms_values(battery_bms_daily.get("bmsList"), "disCharge"),
         cluster_reference_kwh=_sum_positive(trend_list, "batteryDischarge"),
-        previous_value=_coerce_float(previous_daily_energy.get("battery_energy_discharged_today")),
-        same_day=True,
+        previous_value=_coerce_float(previous_daily_energy.get("battery_energy_discharged_today")) if same_day else None,
+        same_day=same_day,
     )
 
     return {
@@ -407,6 +420,16 @@ def _resolve_battery_daily_value(
     if cluster_reference_kwh is not None:
         candidate_values["cluster_reference"] = cluster_reference_kwh
 
+    # A midnight reset is trustworthy when all three raw API perspectives
+    # independently report a zero value. In that case the resolver must allow
+    # a reset to 0 even if the previous accepted value belonged to the old day
+    # or the previous refresh still carried the previous day's total.
+    all_zero_sources = (
+        raw_total_numeric == 0.0
+        and bms_list_sum_kwh == 0.0
+        and cluster_reference_kwh == 0.0
+    )
+
     selected_source = "none"
     candidate_value: float | None = None
     decision = "no_candidate_keep_previous"
@@ -446,6 +469,7 @@ def _resolve_battery_daily_value(
             previous_value=previous_value,
             battery_capacity_kwh=battery_capacity_kwh,
             same_day=same_day,
+            all_zero_sources=all_zero_sources,
         )
         decision = plausibility_decision
     else:
@@ -455,8 +479,9 @@ def _resolve_battery_daily_value(
         (
             "Battery daily energy resolution for %s on %s (%s): "
             "raw_bms_total=%s bms_total_direct_kwh=%s bms_total_div1000_kwh=%s "
-            "bms_list_sum_kwh=%s cluster_reference_kwh=%s selected_source=%s "
-            "candidate=%s previous_value=%s same_day=%s decision=%s accepted_value=%s"
+            "bms_list_sum_kwh=%s cluster_reference_kwh=%s all_zero_sources=%s "
+            "selected_source=%s candidate=%s previous_value=%s same_day=%s "
+            "decision=%s accepted_value=%s"
         ),
         system_id,
         day_key,
@@ -466,6 +491,7 @@ def _resolve_battery_daily_value(
         total_div1000_kwh,
         bms_list_sum_kwh,
         cluster_reference_kwh,
+        all_zero_sources,
         selected_source,
         candidate_value,
         previous_value,
@@ -484,6 +510,7 @@ def _resolve_battery_daily_value(
         bms_total_div1000_kwh=total_div1000_kwh,
         bms_list_sum_kwh=bms_list_sum_kwh,
         cluster_reference_kwh=cluster_reference_kwh,
+        all_zero_sources=all_zero_sources,
     )
 
 
@@ -494,6 +521,7 @@ def _apply_daily_value_plausibility(
     previous_value: float | None,
     battery_capacity_kwh: float | None,
     same_day: bool,
+    all_zero_sources: bool,
 ) -> tuple[float | None, str]:
     """Apply protective plausibility checks to a resolved daily battery value."""
     absolute_limit = max(
@@ -508,6 +536,9 @@ def _apply_daily_value_plausibility(
             absolute_limit,
         )
         return previous_value, "rejected_absolute_limit_keep_previous"
+
+    if all_zero_sources and candidate_value == 0.0:
+        return 0.0, "accepted_all_zero_reset"
 
     if previous_value is None:
         return candidate_value, "accepted"
