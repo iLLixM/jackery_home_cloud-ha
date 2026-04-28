@@ -19,13 +19,20 @@ from .api.auth import build_phone_uid
 from .api.client import JackeryApiClient
 from .const import (
     CONF_ACCOUNT,
+    CONF_CRYPTO_KEY,
+    CONF_ENABLE_MQTT,
+    CONF_MQTT_DEBUG_RAW,
+    CONF_MQTT_TLS_INSECURE,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
     DEFAULT_BASE_URL,
+    DEFAULT_ENABLE_MQTT,
+    DEFAULT_MQTT_DEBUG_RAW,
     DOMAIN,
 )
-from .exceptions import JackeryHomeApiError, JackeryHomeAuthError
+from .crypto_utils import decrypt_text
+from .exceptions import JackeryHomeApiError, JackeryHomeAuthError, JackeryHomeCryptoError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,8 +40,8 @@ _LOGGER = logging.getLogger(__name__)
 async def _validate_credentials(
     hass: HomeAssistant,
     data: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Validate credentials and return the discovered systems."""
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Validate credentials and return discovered systems plus raw MQTT config."""
     client = JackeryApiClient(
         session=async_get_clientsession(hass),
         base_url=DEFAULT_BASE_URL,
@@ -47,11 +54,11 @@ async def _validate_credentials(
     )
     app_user = await client.async_get_app_user()
     systems = await client.async_list_systems()
-    return app_user, systems
+    mqtt_config = await client.async_get_mqtt_credentials()
+    return app_user, systems, mqtt_config
 
 
 def _system_label(system: Mapping[str, Any]) -> str:
-    """Build a user-friendly label for a system selector option."""
     system_id = str(system.get("id", ""))
     name = str(system.get("name") or system.get("systemNo") or system_id)
     system_no = str(system.get("systemNo") or system_id)
@@ -59,7 +66,6 @@ def _system_label(system: Mapping[str, Any]) -> str:
 
 
 def _system_options(systems: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Convert system objects to selector options."""
     return [
         {"value": str(system["id"]), "label": _system_label(system)}
         for system in systems
@@ -67,16 +73,89 @@ def _system_options(systems: list[dict[str, Any]]) -> list[dict[str, str]]:
     ]
 
 
+
 def _credential_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
-    """Build the credential form schema used by multiple flow steps."""
+    """Build the first config step schema for new setups (without MQTT toggle)"""
     defaults = defaults or {}
-    account_default = defaults.get(CONF_ACCOUNT, "")
-    phone_uid_default = defaults.get(CONF_PHONE_UID, "")
     return vol.Schema(
         {
-            vol.Required(CONF_ACCOUNT, default=account_default): str,
+            vol.Required(CONF_ACCOUNT, default=str(defaults.get(CONF_ACCOUNT, ""))): str,
             vol.Required(CONF_PASSWORD): str,
-            vol.Optional(CONF_PHONE_UID, default=phone_uid_default): str,
+            vol.Optional(
+                CONF_PHONE_UID,
+                default=str(defaults.get(CONF_PHONE_UID, "")),
+            ): str,
+        }
+    )
+
+
+def _reconfigure_credential_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
+    """Build the first reconfigure step schema (with MQTT toggle preserved)"""
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(CONF_ACCOUNT, default=str(defaults.get(CONF_ACCOUNT, ""))): str,
+            vol.Required(CONF_PASSWORD): str,
+            vol.Optional(
+                CONF_PHONE_UID,
+                default=str(defaults.get(CONF_PHONE_UID, "")),
+            ): str,
+            vol.Required(
+                CONF_ENABLE_MQTT,
+                default=bool(defaults.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT)),
+            ): bool,
+        }
+    )
+
+
+def _mqtt_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
+    """Build the MQTT-specific step schema."""
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_CRYPTO_KEY,
+                default=str(defaults.get(CONF_CRYPTO_KEY, "")),
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+            ),
+            vol.Required(
+                CONF_MQTT_DEBUG_RAW,
+                default=bool(defaults.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW)),
+            ): bool,
+            vol.Optional(
+                CONF_MQTT_TLS_INSECURE,
+                default=bool(defaults.get(CONF_MQTT_TLS_INSECURE, False)),
+            ): bool,
+        }
+    )
+
+
+def _systems_schema(
+    systems: list[dict[str, Any]],
+    current_selection: list[str],
+) -> vol.Schema:
+    """Build the system selection step schema."""
+    options = _system_options(systems)
+    available_ids = {option["value"] for option in options}
+    default_selection = [
+        str(system_id)
+        for system_id in current_selection
+        if str(system_id) in available_ids
+    ] or [option["value"] for option in options]
+
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_SELECTED_SYSTEMS,
+                default=default_selection,
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=options,
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
         }
     )
 
@@ -85,57 +164,104 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the config flow for Jackery Home Cloud."""
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
     def __init__(self) -> None:
-        """Initialize the config flow."""
         self._pending_entry_data: dict[str, Any] = {}
+        self._pending_options: dict[str, Any] = {}
         self._discovered_systems: list[dict[str, Any]] = []
+        self._discovered_mqtt_config: dict[str, Any] = {}
         self._entry_title: str = DOMAIN
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlowWithReload:
-        """Return the options flow handler."""
         return JackeryHomeCloudOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the first user step."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             prepared_input = self._prepare_credential_input(user_input)
             try:
-                app_user, systems = await _validate_credentials(self.hass, prepared_input)
+                app_user, systems, mqtt_config = await _validate_credentials(self.hass, prepared_input)
             except JackeryHomeAuthError:
                 errors["base"] = "invalid_auth"
             except JackeryHomeApiError:
                 errors["base"] = "cannot_connect"
-            except Exception:  # pragma: no cover - defensive guard for unexpected issues
-                _LOGGER.exception(
-                    "Unexpected exception while validating Jackery credentials"
-                )
+            except Exception:
+                _LOGGER.exception("Unexpected exception while validating Jackery credentials")
                 errors["base"] = "unknown"
             else:
                 if not systems:
                     errors["base"] = "no_systems"
                 else:
-                    account = str(
-                        app_user.get("email") or prepared_input[CONF_ACCOUNT]
-                    ).lower()
+                    account = str(app_user.get("email") or prepared_input[CONF_ACCOUNT]).lower()
                     await self.async_set_unique_id(account)
                     self._abort_if_unique_id_configured()
-                    self._pending_entry_data = prepared_input
+                    self._pending_entry_data = {
+                        CONF_ACCOUNT: prepared_input[CONF_ACCOUNT],
+                        CONF_PASSWORD: prepared_input[CONF_PASSWORD],
+                        CONF_PHONE_UID: prepared_input[CONF_PHONE_UID],
+                    }
+                    self._pending_options = {
+                        CONF_ENABLE_MQTT: False,
+                    }
                     self._discovered_systems = systems
+                    self._discovered_mqtt_config = mqtt_config
                     self._entry_title = account
+                    if self._pending_options[CONF_ENABLE_MQTT]:
+                        return await self.async_step_mqtt()
                     return await self.async_step_systems()
 
-        defaults = {CONF_PHONE_UID: ""}
+        defaults = {
+            CONF_ACCOUNT: self._pending_entry_data.get(CONF_ACCOUNT, ""),
+            CONF_PHONE_UID: self._pending_entry_data.get(CONF_PHONE_UID, ""),
+        }
         return self.async_show_form(
             step_id="user",
             data_schema=_credential_schema(defaults),
+            errors=errors,
+        )
+
+    async def async_step_mqtt(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            crypto_key = str(user_input.get(CONF_CRYPTO_KEY, "")).strip()
+            mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, False))
+            mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
+
+            if not crypto_key:
+                errors["base"] = "missing_crypto_key"
+            elif self._discovered_mqtt_config.get("mqttPassword"):
+                try:
+                    decrypt_text(str(self._discovered_mqtt_config["mqttPassword"]), crypto_key)
+                except JackeryHomeCryptoError:
+                    errors["base"] = "invalid_crypto_key"
+
+            if not errors:
+                self._pending_options.update(
+                    {
+                        CONF_CRYPTO_KEY: crypto_key,
+                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                        CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
+                    }
+                )
+                return await self.async_step_systems()
+
+        defaults = {
+            CONF_CRYPTO_KEY: self._pending_options.get(CONF_CRYPTO_KEY, ""),
+            CONF_MQTT_DEBUG_RAW: self._pending_options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
+            CONF_MQTT_TLS_INSECURE: self._pending_options.get(CONF_MQTT_TLS_INSECURE, False),
+        }
+        return self.async_show_form(
+            step_id="mqtt",
+            data_schema=_mqtt_schema(defaults),
             errors=errors,
         )
 
@@ -144,37 +270,28 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle system selection after successful login."""
         errors: dict[str, str] = {}
-        options = _system_options(self._discovered_systems)
-        default_selection = [option["value"] for option in options]
 
         if user_input is not None:
             selected = [str(item) for item in user_input.get(CONF_SELECTED_SYSTEMS, [])]
             if not selected:
                 errors["base"] = "no_system_selected"
             else:
+                options = dict(self._pending_options)
+                options[CONF_SELECTED_SYSTEMS] = selected
+                if not options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT):
+                    options.pop(CONF_CRYPTO_KEY, None)
+                    options.pop(CONF_MQTT_DEBUG_RAW, None)
+                    options.pop(CONF_MQTT_TLS_INSECURE, None)
                 return self.async_create_entry(
                     title=self._entry_title,
                     data=self._pending_entry_data,
-                    options={CONF_SELECTED_SYSTEMS: selected},
+                    options=options,
                 )
 
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_SELECTED_SYSTEMS,
-                    default=default_selection,
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=options,
-                        multiple=True,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                )
-            }
-        )
+        current_selection = self._pending_options.get(CONF_SELECTED_SYSTEMS, [])
         return self.async_show_form(
             step_id="systems",
-            data_schema=schema,
+            data_schema=_systems_schema(self._discovered_systems, list(current_selection)),
             errors=errors,
         )
 
@@ -187,50 +304,86 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle re-authentication triggered by Home Assistant."""
         entry = self._get_reauth_entry()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_confirm",
+                data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            )
+
+        updated = {
+            CONF_ACCOUNT: entry.data[CONF_ACCOUNT],
+            CONF_PASSWORD: user_input[CONF_PASSWORD],
+            CONF_PHONE_UID: entry.data[CONF_PHONE_UID],
+        }
+
+        try:
+            await _validate_credentials(self.hass, updated)
+        except JackeryHomeAuthError:
+            return self.async_show_form(
+                step_id="reauth_confirm",
+                data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+                errors={"base": "invalid_auth"},
+            )
+        except JackeryHomeApiError:
+            return self.async_show_form(
+                step_id="reauth_confirm",
+                data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+                errors={"base": "cannot_connect"},
+            )
+
+        self.hass.config_entries.async_update_entry(entry, data=updated)
+        await self.hass.config_entries.async_reload(entry.entry_id)
+        return self.async_abort(reason="reauth_successful")
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Symmetric reconfigure flow step 1: credentials + MQTT enable."""
         errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
 
         if user_input is not None:
-            prepared_input = self._prepare_credential_input(
-                {
-                    CONF_ACCOUNT: entry.data[CONF_ACCOUNT],
-                    CONF_PASSWORD: user_input[CONF_PASSWORD],
-                    CONF_PHONE_UID: user_input.get(CONF_PHONE_UID)
-                    or entry.data[CONF_PHONE_UID],
-                }
-            )
+            prepared_input = self._prepare_credential_input(user_input)
             try:
-                await _validate_credentials(self.hass, prepared_input)
+                _, systems, mqtt_config = await _validate_credentials(self.hass, prepared_input)
             except JackeryHomeAuthError:
                 errors["base"] = "invalid_auth"
             except JackeryHomeApiError:
                 errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected exception while reconfiguring Jackery credentials")
+                errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(str(entry.data[CONF_ACCOUNT]).lower())
-                self._abort_if_unique_id_mismatch()
-                return self.async_update_reload_and_abort(
-                    entry,
-                    data_updates={
+                if not systems:
+                    errors["base"] = "no_systems"
+                else:
+                    self._pending_entry_data = {
+                        CONF_ACCOUNT: prepared_input[CONF_ACCOUNT],
                         CONF_PASSWORD: prepared_input[CONF_PASSWORD],
                         CONF_PHONE_UID: prepared_input[CONF_PHONE_UID],
-                    },
-                )
+                    }
+                    self._pending_options = dict(entry.options)
+                    self._pending_options[CONF_ENABLE_MQTT] = bool(
+                        prepared_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT)
+                    )
+                    self._discovered_systems = systems
+                    self._discovered_mqtt_config = mqtt_config
+                    if self._pending_options[CONF_ENABLE_MQTT]:
+                        return await self.async_step_reconfigure_mqtt()
+                    return await self.async_step_reconfigure_systems()
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_PASSWORD): str,
-                vol.Optional(
-                    CONF_PHONE_UID,
-                    default=entry.data.get(CONF_PHONE_UID, ""),
-                ): str,
-            }
-        )
+        defaults = {
+            CONF_ACCOUNT: entry.data.get(CONF_ACCOUNT, ""),
+            CONF_PHONE_UID: entry.data.get(CONF_PHONE_UID, ""),
+            CONF_ENABLE_MQTT: entry.options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
+        }
         return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=schema,
+            step_id="reconfigure",
+            data_schema=_reconfigure_credential_schema(defaults),
             errors=errors,
         )
 
-    async def async_step_reconfigure(
+    async def async_step_reconfigure_mqtt(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Allow users to update connection details without removing the entry."""
@@ -238,68 +391,107 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            prepared_input = self._prepare_credential_input(user_input)
-            if str(prepared_input[CONF_ACCOUNT]).lower() != str(
-                entry.data[CONF_ACCOUNT]
-            ).lower():
-                errors["base"] = "account_mismatch"
-            else:
+            crypto_key = str(user_input.get(CONF_CRYPTO_KEY, "")).strip()
+            mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, False))
+            mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
+
+            if not crypto_key:
+                errors["base"] = "missing_crypto_key"
+            elif self._discovered_mqtt_config.get("mqttPassword"):
                 try:
-                    await _validate_credentials(self.hass, prepared_input)
-                except JackeryHomeAuthError:
-                    errors["base"] = "invalid_auth"
-                except JackeryHomeApiError:
-                    errors["base"] = "cannot_connect"
-                else:
-                    await self.async_set_unique_id(str(entry.data[CONF_ACCOUNT]).lower())
-                    self._abort_if_unique_id_mismatch()
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data_updates={
-                            CONF_ACCOUNT: prepared_input[CONF_ACCOUNT],
-                            CONF_PASSWORD: prepared_input[CONF_PASSWORD],
-                            CONF_PHONE_UID: prepared_input[CONF_PHONE_UID],
-                        },
-                    )
+                    decrypt_text(str(self._discovered_mqtt_config["mqttPassword"]), crypto_key)
+                except JackeryHomeCryptoError:
+                    errors["base"] = "invalid_crypto_key"
+
+            if not errors:
+                self._pending_options.update(
+                    {
+                        CONF_CRYPTO_KEY: crypto_key,
+                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                        CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
+                    }
+                )
+                return await self.async_step_reconfigure_systems()
 
         defaults = {
-            CONF_ACCOUNT: entry.data.get(CONF_ACCOUNT, ""),
-            CONF_PHONE_UID: entry.data.get(CONF_PHONE_UID, ""),
+            CONF_CRYPTO_KEY: self._pending_options.get(CONF_CRYPTO_KEY, ""),
+            CONF_MQTT_DEBUG_RAW: self._pending_options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
+            CONF_MQTT_TLS_INSECURE: self._pending_options.get(CONF_MQTT_TLS_INSECURE, False),
         }
         return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=_credential_schema(defaults),
+            step_id="reconfigure_mqtt",
+            data_schema=_mqtt_schema(defaults),
             errors=errors,
         )
 
-    @staticmethod
-    def _prepare_credential_input(user_input: Mapping[str, Any]) -> dict[str, Any]:
-        """Normalize account credentials from the flow input."""
+    async def async_step_reconfigure_systems(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Symmetric reconfigure flow step 3: system selection."""
+        errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            selected = [str(item) for item in user_input.get(CONF_SELECTED_SYSTEMS, [])]
+            if not selected:
+                errors["base"] = "no_system_selected"
+            else:
+                updated_options = dict(self._pending_options)
+                updated_options[CONF_SELECTED_SYSTEMS] = selected
+                if not updated_options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT):
+                    updated_options.pop(CONF_CRYPTO_KEY, None)
+                    updated_options.pop(CONF_MQTT_DEBUG_RAW, None)
+                    updated_options.pop(CONF_MQTT_TLS_INSECURE, None)
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data=self._pending_entry_data,
+                    options=updated_options,
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reconfigure_successful")
+
+        defaults_selection = list(
+            self._pending_options.get(
+                CONF_SELECTED_SYSTEMS,
+                entry.options.get(CONF_SELECTED_SYSTEMS, []),
+            )
+        )
+        return self.async_show_form(
+            step_id="reconfigure_systems",
+            data_schema=_systems_schema(self._discovered_systems, defaults_selection),
+            errors=errors,
+        )
+
+    def _prepare_credential_input(self, user_input: Mapping[str, Any]) -> dict[str, Any]:
+        """Normalize the first-step credentials and connection toggles."""
         account = str(user_input[CONF_ACCOUNT]).strip()
         password = str(user_input[CONF_PASSWORD])
-        phone_uid = (
-            str(user_input.get(CONF_PHONE_UID, "")).strip() or build_phone_uid(account)
-        )
+        phone_uid = str(user_input.get(CONF_PHONE_UID, "")).strip() or build_phone_uid(account)
         return {
             CONF_ACCOUNT: account,
             CONF_PASSWORD: password,
             CONF_PHONE_UID: phone_uid,
+            CONF_ENABLE_MQTT: bool(user_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT)),
         }
 
 
 class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
-    """Options flow for changing the selected systems."""
+    """Compatibility options flow.
+
+    The main user-facing path should now be the symmetric reconfigure flow.
+    This flow remains available and keeps all MQTT options on one page.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage the options for an existing config entry."""
         errors: dict[str, str] = {}
         systems = self._systems_from_runtime_cache()
+        mqtt_config: dict[str, Any] = {}
 
         if not systems:
             try:
-                _, systems = await _validate_credentials(
+                _, systems, mqtt_config = await _validate_credentials(
                     self.hass,
                     {
                         CONF_ACCOUNT: self.config_entry.data[CONF_ACCOUNT],
@@ -311,87 +503,80 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
                 errors["base"] = "invalid_auth"
             except JackeryHomeApiError:
                 errors["base"] = "cannot_connect"
-            except Exception:  # pragma: no cover - defensive guard for unexpected issues
-                _LOGGER.exception(
-                    "Unexpected exception while loading Jackery system options"
-                )
+            except Exception:
+                _LOGGER.exception("Unexpected exception while loading Jackery system options")
                 errors["base"] = "unknown"
-
-        if systems:
-            options = _system_options(systems)
-            available_ids = {option["value"] for option in options}
-            current_selection = self.config_entry.options.get(CONF_SELECTED_SYSTEMS, [])
-            default_selection = [
-                str(system_id)
-                for system_id in current_selection
-                if str(system_id) in available_ids
-            ] or [option["value"] for option in options]
-
-            if user_input is not None:
-                selected = [str(item) for item in user_input.get(CONF_SELECTED_SYSTEMS, [])]
-                if not selected:
-                    errors["base"] = "no_system_selected"
-                else:
-                    return self.async_create_entry(
-                        data={CONF_SELECTED_SYSTEMS: selected},
-                    )
-
-            schema = vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SELECTED_SYSTEMS,
-                        default=default_selection,
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=options,
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    )
-                }
-            )
         else:
-            stored_selection = self.config_entry.options.get(CONF_SELECTED_SYSTEMS, [])
-            schema = vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SELECTED_SYSTEMS,
-                        default=list(stored_selection),
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                {"value": str(item), "label": str(item)}
-                                for item in stored_selection
-                            ],
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    )
-                }
-            )
+            runtime = getattr(self.config_entry, "runtime_data", None)
+            coordinator = getattr(runtime, "coordinator", None)
+            mqtt_config = getattr(coordinator, "mqtt_credentials", {}) if coordinator else {}
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=schema,
-            errors=errors,
+        if systems and user_input is not None:
+            selected = [str(item) for item in user_input.get(CONF_SELECTED_SYSTEMS, [])]
+            enable_mqtt = bool(user_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT))
+            crypto_key = str(user_input.get(CONF_CRYPTO_KEY, "")).strip()
+            mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW))
+            mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
+
+            if not selected:
+                errors["base"] = "no_system_selected"
+            elif enable_mqtt and not crypto_key:
+                errors["base"] = "missing_crypto_key"
+            elif enable_mqtt and mqtt_config.get("mqttPassword"):
+                try:
+                    decrypt_text(str(mqtt_config["mqttPassword"]), crypto_key)
+                except JackeryHomeCryptoError:
+                    errors["base"] = "invalid_crypto_key"
+
+            if not errors:
+                data = {
+                    CONF_SELECTED_SYSTEMS: selected,
+                    CONF_ENABLE_MQTT: enable_mqtt,
+                }
+                if enable_mqtt:
+                    data.update(
+                        {
+                            CONF_CRYPTO_KEY: crypto_key,
+                            CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                            CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
+                        }
+                    )
+                return self.async_create_entry(data=data)
+
+        current_selection = self.config_entry.options.get(CONF_SELECTED_SYSTEMS, [])
+        current_options = {
+            CONF_ENABLE_MQTT: self.config_entry.options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
+            CONF_CRYPTO_KEY: self.config_entry.options.get(CONF_CRYPTO_KEY, ""),
+            CONF_MQTT_DEBUG_RAW: self.config_entry.options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
+            CONF_MQTT_TLS_INSECURE: self.config_entry.options.get(CONF_MQTT_TLS_INSECURE, False),
+        }
+
+        schema = vol.Schema(
+            {
+                **_systems_schema(systems, list(current_selection)).schema,
+                vol.Required(CONF_ENABLE_MQTT, default=bool(current_options[CONF_ENABLE_MQTT])): bool,
+                vol.Optional(CONF_CRYPTO_KEY, default=str(current_options[CONF_CRYPTO_KEY])): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_MQTT_DEBUG_RAW, default=bool(current_options[CONF_MQTT_DEBUG_RAW])): bool,
+                vol.Optional(CONF_MQTT_TLS_INSECURE, default=bool(current_options[CONF_MQTT_TLS_INSECURE])): bool,
+            }
         )
 
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
     def _systems_from_runtime_cache(self) -> list[dict[str, Any]]:
-        """Read the latest discovered systems from runtime cache if available."""
         runtime = getattr(self.config_entry, "runtime_data", None)
-        if runtime is None:
+        coordinator = getattr(runtime, "coordinator", None)
+        if coordinator is None or not getattr(coordinator, "data", None):
             return []
 
-        coordinator_data = getattr(runtime.coordinator, "data", None)
-        if not coordinator_data:
-            return []
-
-        available_systems = coordinator_data.get("available_systems")
-        if not isinstance(available_systems, dict):
-            return []
-
-        return [
-            system
-            for system in available_systems.values()
-            if isinstance(system, dict)
-        ]
+        systems_by_id = coordinator.data.get("systems", {})
+        systems: list[dict[str, Any]] = []
+        for system_bundle in systems_by_id.values():
+            if not isinstance(system_bundle, dict):
+                continue
+            system = system_bundle.get("system", {})
+            if isinstance(system, dict):
+                systems.append(system)
+        return systems

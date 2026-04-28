@@ -74,7 +74,7 @@ class BatteryResolution:
 
 
 class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinate REST refreshes for all selected Jackery systems."""
+    """Coordinate REST refreshes and MQTT runtime state for Jackery systems."""
 
     def __init__(
         self,
@@ -96,14 +96,29 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._app_user: dict[str, Any] = {}
         self._mqtt_credentials: dict[str, Any] = {}
         self._daily_trend_cache: dict[str, DailyTrendCache] = {}
+        self._mqtt_state: dict[str, Any] = {
+            "connected": False,
+            "connection_state": "inactive",
+            "error": None,
+            "last_topic": None,
+            "last_message_at": None,
+            "last_message_preview": None,
+            "message_count": 0,
+            "last_gw_sn": None,
+            "last_dev_sn": None,
+            "last_method": None,
+        }
+
+    @property
+    def mqtt_credentials(self) -> dict[str, Any]:
+        """Expose the latest encrypted MQTT REST payload for setup/runtime use."""
+        return dict(self._mqtt_credentials)
 
     async def _async_setup(self) -> None:
         """Perform one-time bootstrap work before the first refresh."""
         await self._async_login()
         self._app_user = await self._async_api_call(self.client.async_get_app_user)
-        self._mqtt_credentials = await self._async_api_call(
-            self.client.async_get_mqtt_credentials
-        )
+        self._mqtt_credentials = await self._async_api_call(self.client.async_get_mqtt_credentials)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch fresh data for all selected systems."""
@@ -121,7 +136,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         previous_systems = self.data.get("systems", {}) if self.data else {}
-
         system_results = await asyncio.gather(
             *(
                 self._async_fetch_system_bundle(
@@ -133,16 +147,22 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
+        bundles: dict[str, dict[str, Any]] = {}
+        for system_id, bundle in system_results:
+            bundle["mqtt_state"] = dict(self._mqtt_state)
+            bundles[system_id] = bundle
+
         return {
             "account": self._account,
             "app_user": self._app_user,
             "mqtt_credentials": self._mqtt_credentials,
+            "mqtt_state": dict(self._mqtt_state),
             "available_systems": {
                 system_id: dict(system)
                 for system_id, system in systems_by_id.items()
             },
             "selected_system_ids": list(selected_system_ids),
-            "systems": {system_id: bundle for system_id, bundle in system_results},
+            "systems": bundles,
         }
 
     @property
@@ -181,6 +201,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         aggregate those values only about once per hour.
         """
         monitor = await self._async_api_call(self.client.async_get_monitor, system_id)
+
+        main_device_detail: dict[str, Any] = {}
+        main_device_no = str(system.get("systemNo") or system.get("deviceNo") or "").strip()
+        if main_device_no:
+            main_device_detail = await self._async_optional_api_call(
+                self.client.async_get_device_detail,
+                main_device_no,
+                default={},
+            )
+
         day_key = _system_local_day_key(monitor)
         trend_cluster_daily, battery_bms_daily = await self._async_get_daily_trends(
             system_id,
@@ -209,15 +239,155 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             same_day=same_day,
         )
 
+        battery_count = self._compute_battery_count(merged_system, monitor)
         return system_id, {
             "system": merged_system,
             "monitor": monitor,
             "devices": {},
+            "main_device_firmware": self._extract_main_device_firmware(
+                merged_system,
+                monitor,
+                main_device_detail,
+            ),
+            "battery_count": battery_count,
+            "total_battery_capacity_kwh": self._compute_total_battery_capacity_kwh(
+                merged_system,
+                battery_count,
+            ),
             "trend_cluster_daily": trend_cluster_daily,
             "battery_bms_daily": battery_bms_daily,
             "daily_energy": daily_energy,
             "trend_day_key": day_key,
         }
+
+
+    def _extract_main_device_firmware(
+        self,
+        merged_system: Mapping[str, Any],
+        monitor: Mapping[str, Any],
+        main_device_detail: Mapping[str, Any],
+    ) -> str | None:
+        """Extract the main device firmware from the best available REST sources.
+
+        Preferred source:
+        - /v1/home/device/detail?deviceNo=<systemNo> -> result.baseVO.softVer
+
+        Fallbacks:
+        - monitor.energyFlowChartVO.emsGwVO.softVer
+        - merged_system version-like fields
+        """
+        if isinstance(main_device_detail, Mapping):
+            result = main_device_detail.get("result", main_device_detail)
+            if isinstance(result, Mapping):
+                base_vo = result.get("baseVO", {})
+                if isinstance(base_vo, Mapping):
+                    value = base_vo.get("softVer")
+                    if value not in (None, ""):
+                        return str(value)
+
+        if isinstance(monitor, Mapping):
+            energy = monitor.get("energyFlowChartVO", {})
+            if isinstance(energy, Mapping):
+                ems = energy.get("emsGwVO", {})
+                if isinstance(ems, Mapping):
+                    for key in (
+                        "softVer",
+                        "firmwareVersion",
+                        "firmware",
+                        "swVersion",
+                        "version",
+                    ):
+                        value = ems.get(key)
+                        if value not in (None, ""):
+                            return str(value)
+
+        if isinstance(merged_system, Mapping):
+            for key in (
+                "softVer",
+                "firmwareVersion",
+                "firmware",
+                "swVersion",
+                "version",
+                "masterVersion",
+                "appVersion",
+            ):
+                value = merged_system.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return None
+
+    def _compute_battery_count(
+        self,
+        merged_system: Mapping[str, Any],
+        monitor: Mapping[str, Any],
+    ) -> int:
+        """Return the total battery count including the main unit battery.
+
+        Preferred source:
+        - monitor.energyFlowChartVO.emsGwVO.powerPackList
+          This list contains the main unit battery (bms1_...) and any
+          additional battery packs (bms2_..., bms3_..., ...).
+
+        Fallbacks:
+        - 1 + emsGwVO.powerPacks
+        - 1 + merged_system power-pack count fields
+        """
+        if isinstance(monitor, Mapping):
+            energy = monitor.get("energyFlowChartVO", {})
+            if isinstance(energy, Mapping):
+                ems = energy.get("emsGwVO", {})
+                if isinstance(ems, Mapping):
+                    power_pack_list = ems.get("powerPackList")
+                    if isinstance(power_pack_list, list) and power_pack_list:
+                        return max(len(power_pack_list), 1)
+
+                    power_packs = ems.get("powerPacks")
+                    try:
+                        if power_packs not in (None, ""):
+                            return 1 + max(int(power_packs), 0)
+                    except (TypeError, ValueError):
+                        pass
+
+        if isinstance(merged_system, Mapping):
+            for key in ("powerPackNum", "powerPackCount", "batteryPackCount", "batteryNum"):
+                value = merged_system.get(key)
+                try:
+                    if value not in (None, ""):
+                        return 1 + max(int(value), 0)
+                except (TypeError, ValueError):
+                    continue
+
+        return 1
+
+    def _compute_total_battery_capacity_kwh(
+        self,
+        merged_system: Mapping[str, Any],
+        battery_count: int,
+    ) -> float | None:
+        """Return the installed total battery capacity with strict field priority.
+
+        Based on observed monitor payloads, systemVO.batteryCapacity already
+        contains the summed total capacity of the complete storage system.
+        Therefore we prefer it explicitly before considering fallback fields.
+        """
+        if not isinstance(merged_system, Mapping):
+            return None
+
+        primary = merged_system.get("batteryCapacity")
+        try:
+            if primary not in (None, ""):
+                return round(float(primary), 3)
+        except (TypeError, ValueError):
+            pass
+
+        for key in ("capacity", "mainBatteryCapacity", "energyStorageCapacity"):
+            value = merged_system.get(key)
+            try:
+                if value not in (None, ""):
+                    return round(float(value), 3)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     async def _async_get_daily_trends(
         self,
@@ -257,6 +427,46 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return trend_cluster_daily, battery_bms_daily
 
+    async def async_handle_mqtt_status(self, status: Mapping[str, Any]) -> None:
+        self._mqtt_state.update(
+            {
+                "connected": bool(status.get("connected", False)),
+                "connection_state": status.get("connection_state") or self._mqtt_state.get("connection_state"),
+                "error": status.get("error"),
+            }
+        )
+        self._publish_runtime_update()
+
+    async def async_handle_mqtt_message(self, message: Mapping[str, Any]) -> None:
+        payload_text = message.get("payload_text")
+        preview = str(payload_text)[:300] if payload_text is not None else None
+        self._mqtt_state.update(
+            {
+                "connected": True,
+                "connection_state": "connected",
+                "error": None,
+                "last_topic": message.get("topic"),
+                "last_message_at": dt_util.utcnow(),
+                "last_message_preview": preview,
+                "message_count": int(self._mqtt_state.get("message_count", 0)) + 1,
+                "last_gw_sn": message.get("gw_sn"),
+                "last_dev_sn": message.get("dev_sn"),
+                "last_method": message.get("method"),
+            }
+        )
+        self._publish_runtime_update()
+
+    def _publish_runtime_update(self) -> None:
+        if not self.data:
+            return
+        new_data = dict(self.data)
+        new_data["mqtt_state"] = dict(self._mqtt_state)
+        systems = {
+            system_id: {**bundle, "mqtt_state": dict(self._mqtt_state)}
+            for system_id, bundle in self.data.get("systems", {}).items()
+        }
+        new_data["systems"] = systems
+        self.async_set_updated_data(new_data)
     async def _async_api_call(
         self,
         func: Callable[..., Awaitable[Any]],
@@ -306,7 +516,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ]
 
         return list(systems_by_id)
-
 
 def _system_local_day_key(monitor: Mapping[str, Any]) -> str:
     """Return the current day key for the system timezone."""

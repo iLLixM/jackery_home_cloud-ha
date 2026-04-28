@@ -14,8 +14,10 @@ from ..const import (
     API_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_BASE_URL,
     DEFAULT_ENCRYPTED,
+    MQTT_DEFAULT_PORT,
     TREND_TYPE_DAY,
 )
+from ..crypto_utils import decrypt_text
 from ..exceptions import JackeryHomeApiError, JackeryHomeAuthError
 from .auth import build_auth_headers, build_base_headers, build_login_payload
 
@@ -119,7 +121,7 @@ class JackeryApiClient:
         multi-system behaviour.
         """
         payload: dict[str, Any] = {}
-        if system_id:
+        if system_id is not None:
             payload["systemId"] = system_id
 
         data = await self._request(
@@ -139,14 +141,92 @@ class JackeryApiClient:
         )
         return self._result_list(data)
 
+    async def async_get_device_detail(self, device_no: str) -> dict[str, Any]:
+        """Fetch detailed metadata for a single Jackery device.
+
+        The detail response is used for Device Info enrichment, especially
+        result.baseVO.softVer for the main device firmware.
+        """
+        data = await self._request(
+            method="GET",
+            path=f"/geneverse-iot-home/v1/home/device/detail?deviceNo={device_no}",
+            headers=self._auth_headers(),
+        )
+        return self._result_dict(data)
+
     async def async_get_mqtt_credentials(self) -> dict[str, Any]:
-        """Fetch MQTT credentials for future push support."""
+        """Fetch MQTT connection metadata from the Jackery REST API."""
         data = await self._request(
             method="GET",
             path="/geneverse-iot-home/v1/idc/config/mqttServer",
             headers=self._auth_headers(),
         )
         return self._result_dict(data)
+
+    async def async_build_mqtt_credentials(
+        self,
+        crypto_key: str,
+        mqtt_config: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build ready-to-use MQTT credentials from the REST API response.
+
+        The Jackery REST API returns an encoded MQTT credential text that must be
+        decrypted with the integration-wide crypto key supplied by the user.
+        Intentionally verbose debug logging is kept here because this phase is
+        meant to validate the MQTT foundation end-to-end.
+        """
+        raw = dict(mqtt_config or await self.async_get_mqtt_credentials())
+        host = str(raw.get("mqttServer") or "").strip()
+        username = str(raw.get("mqttUserName") or "").strip()
+        encrypted_password = str(raw.get("mqttPassword") or "")
+
+        try:
+            port = int(raw.get("mqttPort") or MQTT_DEFAULT_PORT)
+        except (TypeError, ValueError):
+            port = MQTT_DEFAULT_PORT
+
+        _LOGGER.debug(
+            "Jackery MQTT server info from API: host=%s port=%s username=%s encrypted_password=%s raw=%s",
+            host,
+            port,
+            username,
+            encrypted_password,
+            raw,
+        )
+        _LOGGER.debug("Jackery integration crypto key for MQTT decrypt: %s", crypto_key)
+
+        if not host or not username or not encrypted_password:
+            raise JackeryHomeApiError(
+                "The MQTT configuration response did not contain all required fields."
+            )
+
+        try:
+            password = decrypt_text(encrypted_password, crypto_key)
+        except Exception as err:
+            _LOGGER.debug(
+                "Jackery MQTT password decrypt failed. host=%s port=%s username=%s encrypted_password=%s crypto_key=%s error=%s",
+                host,
+                port,
+                username,
+                encrypted_password,
+                crypto_key,
+                err,
+            )
+            raise
+
+        _LOGGER.debug(
+            "Jackery decoded MQTT credential value: %s",
+            password,
+        )
+
+        return {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "tls": True,
+            "raw": raw,
+        }
 
     async def async_get_cluster_trend_daily(
         self,

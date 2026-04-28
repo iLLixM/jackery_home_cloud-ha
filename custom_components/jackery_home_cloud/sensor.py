@@ -19,7 +19,7 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
+from .const import CONF_ENABLE_MQTT, DOMAIN, MANUFACTURER, MODEL_NAME_MAP
 from .coordinator import JackeryHomeCloudCoordinator
 
 PARALLEL_UPDATES = 0
@@ -243,6 +243,55 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _daily_energy(bundle, "on_grid_energy_exported_today"),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
+    JackeryMetricDescription(
+        key="battery_count",
+        name="Battery count",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda bundle: bundle.get("battery_count"),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="total_battery_capacity",
+        name="Total battery capacity",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        icon="mdi:battery-high",
+        value_fn=lambda bundle: _coerce_float(bundle.get("total_battery_capacity_kwh")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="mqtt_connection_status",
+        name="MQTT connection status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "connection_state"),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="mqtt_message_count",
+        name="MQTT message count",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda bundle: _coerce_int(_safe_get(bundle, "mqtt_state", "message_count")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="mqtt_last_topic",
+        name="MQTT last topic",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "last_topic"),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="mqtt_last_message_at",
+        name="MQTT last message at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "last_message_at"),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
 )
 
 
@@ -255,12 +304,13 @@ async def async_setup_entry(
     runtime = entry.runtime_data
     coordinator: JackeryHomeCloudCoordinator = runtime.coordinator
     known_unique_ids: set[str] = set()
+    mqtt_enabled = bool(entry.options.get(CONF_ENABLE_MQTT, False))
 
     @callback
     def async_add_new_entities() -> None:
         """Create sensors for all currently known systems."""
         new_entities: list[SensorEntity] = []
-        for entity in _build_entities(coordinator):
+        for entity in _build_entities(coordinator, mqtt_enabled):
             if entity.unique_id in known_unique_ids:
                 continue
             known_unique_ids.add(entity.unique_id)
@@ -273,13 +323,18 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
 
 
-def _build_entities(coordinator: JackeryHomeCloudCoordinator) -> list[SensorEntity]:
+def _build_entities(
+    coordinator: JackeryHomeCloudCoordinator,
+    mqtt_enabled: bool,
+) -> list[SensorEntity]:
     """Create all sensor entities for the coordinator data snapshot."""
     entities: list[SensorEntity] = []
     systems = coordinator.data.get("systems", {}) if coordinator.data else {}
 
     for system_id, bundle in systems.items():
         for description in SYSTEM_SENSOR_DESCRIPTIONS:
+            if not mqtt_enabled and description.key.startswith("mqtt_"):
+                continue
             entities.append(
                 JackeryMetricSensor(
                     coordinator=coordinator,
@@ -328,8 +383,7 @@ class JackeryBaseSensor(CoordinatorEntity[JackeryHomeCloudCoordinator], SensorEn
         if not bundle:
             return DeviceInfo(identifiers={(DOMAIN, f"missing_{self._system_id}")})
 
-        system = bundle.get("system", {})
-        return _system_device_info(self._system_id, system)
+        return _system_device_info(self._system_id, bundle)
 
     @property
     def _system_bundle(self) -> dict[str, Any] | None:
@@ -368,21 +422,34 @@ class JackeryMetricSensor(JackeryBaseSensor):
         return self.entity_description.value_fn(bundle)
 
 
-def _system_device_info(system_id: str, system: Mapping[str, Any]) -> DeviceInfo:
+def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:
     """Build the device registry payload for a Jackery system."""
+    system = bundle.get("system", {}) if isinstance(bundle, Mapping) else {}
     system_no = str(system.get("systemNo") or system_id)
     name = str(system.get("name") or system_no)
     return DeviceInfo(
         identifiers={(DOMAIN, f"system_{system_id}")},
         name=name,
         manufacturer=MANUFACTURER,
-        model=str(
+        model=_friendly_model_name(
             system.get("factoryModel")
             or system.get("series")
-            or "Jackery Home System"
+            or system.get("model")
         ),
         serial_number=system_no,
+        sw_version=_safe_str(bundle.get("main_device_firmware")),
     )
+
+
+def _friendly_model_name(raw_model: Any) -> str:
+    """Return a combined technical and market-facing model name when known."""
+    raw = _safe_str(raw_model)
+    if not raw:
+        return "Jackery Home System"
+    friendly = MODEL_NAME_MAP.get(raw)
+    if not friendly:
+        return raw
+    return f"{raw} ({friendly})"
 
 
 def _unique_source_or_system(system_id: str, source: Any) -> str:
@@ -427,5 +494,15 @@ def _coerce_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Convert API values to int when possible."""
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None

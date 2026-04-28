@@ -13,5 +13,13 @@ class JackeryHomeApiError(JackeryHomeError):
     """The REST API returned an error or invalid payload."""
 
 
+class JackeryHomeCryptoError(JackeryHomeError):
+    """The provided crypto key or encoded text payload is invalid."""
+
+
 class JackeryHomeMqttError(JackeryHomeError):
-    """Placeholder for future MQTT related failures."""
+    """MQTT connection, parsing, or runtime state handling failed."""
+
+
+class JackeryCryptoError(Exception):
+    """Raised when Jackery-specific credential encryption or decryption fails."""

@@ -11,6 +11,9 @@ CONF_ACCOUNT = "account"
 CONF_PASSWORD = "password"
 CONF_PHONE_UID = "phone_uid"
 CONF_SELECTED_SYSTEMS = "selected_systems"
+CONF_ENABLE_MQTT = "enable_mqtt"
+CONF_CRYPTO_KEY = "crypto_key"
+CONF_MQTT_DEBUG_RAW = "mqtt_debug_raw"
 
 DEFAULT_USER_END = "HOME"
 DEFAULT_USER_TYPE = "2"
@@ -32,18 +35,26 @@ DEFAULT_BASE_URL = (
 )
 
 API_REQUEST_TIMEOUT_SECONDS = 30
-
-# Live monitor data is still refreshed frequently so current power values stay
-# responsive in Home Assistant.
+METADATA_UPDATE_INTERVAL_SECONDS = 3600
 UPDATE_INTERVAL_SECONDS = 60
-
-# Daily trend values from the cloud backend appear to be aggregated only about
-# once per hour. Refreshing them every 15 minutes is sufficient and reduces
-# unnecessary API calls while still picking up new data shortly after it becomes
-# available server-side.
 DAILY_TREND_UPDATE_INTERVAL_SECONDS = 900
 
 TREND_TYPE_DAY = "2"
 TREND_DATE_FORMAT = "%Y%m%d"
 
+DEFAULT_ENABLE_MQTT = False
+DEFAULT_MQTT_DEBUG_RAW = False
+DEFAULT_MQTT_USE_TLS = True
+MQTT_DEFAULT_PORT = 8883
+MQTT_LWT_TOPIC_TEMPLATE = "v1/iot_gw/gw_lwt/{device_serial}"
+MQTT_CLOUD_DATA_TOPIC_TEMPLATE = "v1/iot_gw/cloud/data/{device_serial}"
+
+
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+CONF_MQTT_TLS_INSECURE = "mqtt_tls_insecure"
+
+
+MODEL_NAME_MAP: dict[str, str] = {
+    "JAKS-IN1K5-BA2K-EUA1": "HomePower 2000 Ultra",
+}

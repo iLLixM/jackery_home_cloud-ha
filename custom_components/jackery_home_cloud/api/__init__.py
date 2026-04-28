@@ -1,1 +1,1 @@
-"""API helpers for Jackery Home Cloud."""
+"""API package for the Jackery Home Cloud integration."""
