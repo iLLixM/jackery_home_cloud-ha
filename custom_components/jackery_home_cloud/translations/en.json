@@ -37,10 +37,32 @@
         "data": {
           "account": "Account",
           "password": "Password",
-          "phone_uid": "Phone UID"
-        },
-        "data_description": {
-          "phone_uid": "Optional. Leave empty to generate or keep a stable Home Assistant specific identifier."
+          "phone_uid": "Phone UID",
+          "enable_mqtt": "Enable MQTT foundation (early beta, requires encryption key)"
+        }
+      },
+      "mqtt": {
+        "title": "MQTT preparation options",
+        "description": "Provide the MQTT crypto key and optional MQTT debug settings.",
+        "data": {
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
+          "crypto_key": "Crypto key"
+        }
+      },
+      "reconfigure_mqtt": {
+        "title": "MQTT preparation options",
+        "description": "Provide the crypto key and optional MQTT debug settings.",
+        "data": {
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
+          "crypto_key": "Crypto key"
+        }
+      },
+      "reconfigure_systems": {
+        "title": "Select systems",
+        "data": {
+          "selected_systems": "Systems"
         }
       }
     },
