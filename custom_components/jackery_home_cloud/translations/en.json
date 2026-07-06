@@ -3,22 +3,23 @@
     "step": {
       "user": {
         "title": "Connect to Jackery Home Cloud",
-        "description": "Enter your Jackery Home Cloud credentials",
+        "description": "Enter your Jackery Home Cloud credentials and choose whether MQTT connection should be enabled.",
         "data": {
           "account": "Account",
           "password": "Password",
           "phone_uid": "Phone UID",
-          "enable_mqtt": "Enable MQTT foundation (early alpha, requires encryption key)"
-        },
-        "data_description": {
-          "phone_uid": "Optional. Leave empty to let the integration generate a stable Home Assistant specific identifier."
+          "enable_mqtt": "Enable MQTT connection"
         }
       },
       "systems": {
-        "title": "Select systems",
-        "description": "Choose which Jackery systems should be added to Home Assistant.",
+        "title": "Select systems and MQTT options",
+        "description": "Choose which systems should be added to Home Assistant and configure optional MQTT connection settings.",
         "data": {
-          "selected_systems": "Systems"
+          "selected_systems": "Systems",
+          "enable_mqtt": "Enable MQTT connection",
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
+          "crypto_key": "Crypto key (legacy fallback only)"
         }
       },
       "reauth_confirm": {
@@ -29,7 +30,7 @@
           "phone_uid": "Phone UID"
         },
         "data_description": {
-          "phone_uid": "Optional. Change as you like or keep the existing phone UID"
+          "phone_uid": "Optional. Leave empty to keep the existing phone UID."
         }
       },
       "reconfigure": {
@@ -39,34 +40,18 @@
           "account": "Account",
           "password": "Password",
           "phone_uid": "Phone UID",
-          "enable_mqtt": "Enable MQTT foundation (early alpha, requires encryption key)"
-        },
-        "data_description": {
-          "phone_uid": "Optional. Change as you like or keep the existing phone UID."
-        }
-      },
-      "mqtt": {
-        "title": "MQTT preparation options",
-        "description": "Provide the MQTT crypto key and optional MQTT debug settings.",
-        "data": {
-          "mqtt_debug_raw": "Enable MQTT raw debug logging",
-          "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "crypto_key": "Crypto key"
-        }
-      },
-      "reconfigure_mqtt": {
-        "title": "MQTT preparation options",
-        "description": "Provide the crypto key and optional MQTT debug settings.",
-        "data": {
-          "mqtt_debug_raw": "Enable MQTT raw debug logging",
-          "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "crypto_key": "Crypto key"
+          "enable_mqtt": "Enable MQTT connection"
         }
       },
       "reconfigure_systems": {
-        "title": "Select systems",
+        "title": "Select systems and MQTT options",
+        "description": "Choose which systems should remain enabled in Home Assistant and configure MQTT connection settings.",
         "data": {
-          "selected_systems": "Systems"
+          "selected_systems": "Systems",
+          "enable_mqtt": "Enable MQTT connection",
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
+          "crypto_key": "Crypto key (legacy fallback only)"
         }
       }
     },
@@ -75,8 +60,8 @@
       "invalid_auth": "Authentication failed.",
       "no_systems": "No systems were found for this account.",
       "no_system_selected": "Select at least one system.",
-      "missing_crypto_key": "Provide the integration crypto key before enabling MQTT foundation.",
-      "invalid_crypto_key": "The provided integration crypto key could not decode the encoded MQTT credential returned by the Jackery API.",
+      "missing_crypto_key": "The discovered MQTT configuration still uses the legacy encoded credential flow. Provide the integration crypto key to continue.",
+      "invalid_crypto_key": "The provided integration crypto key could not decode the legacy encoded MQTT credential returned by the Jackery API.",
       "account_mismatch": "The account cannot be changed during reconfiguration.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs."
     },
@@ -89,17 +74,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "Systems and options",
-        "description": "Choose which systems should remain enabled in Home Assistant and optionally prepare MQTT foundation access.",
+        "title": "Systems and MQTT options",
+        "description": "Choose which systems should remain enabled in Home Assistant and optionally configure MQTT connection settings.",
         "data": {
           "selected_systems": "Systems",
-          "enable_mqtt": "Enable MQTT foundation (early alpha, requires crypto key)",
+          "enable_mqtt": "Enable MQTT connection",
           "mqtt_debug_raw": "Enable MQTT raw debug logging",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "crypto_key": "Integration crypto key"
+          "crypto_key": "Integration crypto key (legacy fallback only)"
         },
         "data_description": {
-          "crypto_key": "Optional unless MQTT foundation is enabled. The key is used to decode messages returned by the REST API."
+          "crypto_key": "Optional unless MQTT foundation is enabled. The key is used to decode Jackery credential values such as the encoded MQTT credential returned by the REST API."
         }
       }
     },
@@ -108,7 +93,7 @@
       "invalid_auth": "Authentication failed.",
       "no_system_selected": "Select at least one system.",
       "missing_crypto_key": "Provide the integration Crypto key before enabling MQTT foundation.",
-      "invalid_crypto_key": "The provided integration Crypto key could not decode messages returned by the Jackery API.",
+      "invalid_crypto_key": "The provided integration Crypto key could not decrypt the encrypted MQTT password returned by the Jackery API.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs."
     }
   },

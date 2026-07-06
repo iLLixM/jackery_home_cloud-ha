@@ -100,53 +100,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.runtime_data = runtime
 
     if entry.options.get(CONF_ENABLE_MQTT):
-        crypto_key = str(entry.options.get(CONF_CRYPTO_KEY, ""))
-        if not crypto_key:
+        crypto_key = str(entry.options.get(CONF_CRYPTO_KEY, "")).strip()
+        try:
+            mqtt_credentials = await client.async_build_mqtt_credentials(
+                crypto_key,
+                coordinator.mqtt_credentials,
+            )
+            mqtt_tls_insecure = bool(entry.options.get(CONF_MQTT_TLS_INSECURE, False))
+            main_device_serial = _extract_main_device_serial(coordinator)
+            _LOGGER.debug("Jackery MQTT TLS insecure option from config entry: %s", mqtt_tls_insecure)
+            _LOGGER.debug("Jackery main device serial selected for targeted MQTT subscriptions: %s", main_device_serial)
+            mqtt_client = JackeryMqttClient(
+                hass,
+                mqtt_credentials,
+                device_serial=main_device_serial,
+                debug_raw=bool(entry.options.get(CONF_MQTT_DEBUG_RAW, False)),
+                tls_insecure=mqtt_tls_insecure,
+                message_callback=coordinator.async_handle_mqtt_message,
+                status_callback=coordinator.async_handle_mqtt_status,
+            )
+            await mqtt_client.async_start()
+            runtime.mqtt_client = mqtt_client
+        except JackeryHomeCryptoError as err:
             _LOGGER.warning(
-                "MQTT is enabled for %s but no integration crypto key is configured in the options flow.",
+                "Failed to start Jackery MQTT foundation for %s because a legacy encoded credential still requires a valid integration crypto key: %s",
                 entry.title,
+                err,
             )
             await coordinator.async_handle_mqtt_status(
                 {
                     "connected": False,
                     "connection_state": "disabled",
-                    "error": "Missing integration crypto key in options.",
+                    "error": str(err),
                 }
             )
-        else:
-            try:
-                mqtt_credentials = await client.async_build_mqtt_credentials(
-                    crypto_key,
-                    coordinator.mqtt_credentials,
-                )
-                mqtt_tls_insecure = bool(entry.options.get(CONF_MQTT_TLS_INSECURE, False))
-                main_device_serial = _extract_main_device_serial(coordinator)
-                _LOGGER.debug("Jackery MQTT TLS insecure option from config entry: %s", mqtt_tls_insecure)
-                _LOGGER.debug("Jackery main device serial selected for targeted MQTT subscriptions: %s", main_device_serial)
-                mqtt_client = JackeryMqttClient(
-                    hass,
-                    mqtt_credentials,
-                    device_serial=main_device_serial,
-                    debug_raw=bool(entry.options.get(CONF_MQTT_DEBUG_RAW, False)),
-                    tls_insecure=mqtt_tls_insecure,
-                    message_callback=coordinator.async_handle_mqtt_message,
-                    status_callback=coordinator.async_handle_mqtt_status,
-                )
-                await mqtt_client.async_start()
-                runtime.mqtt_client = mqtt_client
-            except (JackeryHomeMqttError, JackeryHomeCryptoError, Exception) as err:
-                _LOGGER.warning(
-                    "Failed to start Jackery MQTT foundation for %s: %s",
-                    entry.title,
-                    err,
-                )
-                await coordinator.async_handle_mqtt_status(
-                    {
-                        "connected": False,
-                        "connection_state": "error",
-                        "error": str(err),
-                    }
-                )
+        except (JackeryHomeMqttError, Exception) as err:
+            _LOGGER.warning(
+                "Failed to start Jackery MQTT foundation for %s: %s",
+                entry.title,
+                err,
+            )
+            await coordinator.async_handle_mqtt_status(
+                {
+                    "connected": False,
+                    "connection_state": "error",
+                    "error": str(err),
+                }
+            )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

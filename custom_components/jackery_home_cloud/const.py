@@ -44,10 +44,11 @@ TREND_DATE_FORMAT = "%Y%m%d"
 
 DEFAULT_ENABLE_MQTT = False
 DEFAULT_MQTT_DEBUG_RAW = False
+DEFAULT_MQTT_TLS_INSECURE = False
 DEFAULT_MQTT_USE_TLS = True
 MQTT_DEFAULT_PORT = 8883
 MQTT_LWT_TOPIC_TEMPLATE = "v1/iot_gw/gw_lwt/{device_serial}"
-MQTT_CLOUD_DATA_TOPIC_TEMPLATE = "v1/iot_gw/cloud/data/{device_serial}"
+MQTT_GW_DATA_TOPIC_TEMPLATE = "v1/iot_gw/gw/data/{device_serial}"
 
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]

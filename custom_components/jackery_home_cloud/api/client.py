@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import asyncio
 from collections.abc import Mapping
 import json
@@ -155,30 +156,69 @@ class JackeryApiClient:
         return self._result_dict(data)
 
     async def async_get_mqtt_credentials(self) -> dict[str, Any]:
-        """Fetch MQTT connection metadata from the Jackery REST API."""
-        data = await self._request(
-            method="GET",
-            path="/geneverse-iot-home/v1/idc/config/mqttServer",
-            headers=self._auth_headers(),
+        """Fetch MQTT connection metadata from the Jackery REST API.
+
+        Prefer the newer v2 endpoint, which may already provide ready-to-use
+        plaintext MQTT credentials. Fall back to the legacy v1 endpoint if
+        v2 is unavailable or incomplete.
+        """
+        endpoints = (
+            ("/geneverse-iot-home/v2/idc/config/mqttServer", True, "v2"),
+            ("/geneverse-iot-home/v1/idc/config/mqttServer", False, "v1"),
         )
-        return self._result_dict(data)
+
+        last_error: Exception | None = None
+        for path, password_is_plaintext, source_endpoint in endpoints:
+            try:
+                data = await self._request(
+                    method="GET",
+                    path=path,
+                    headers=self._auth_headers(),
+                )
+                result = self._result_dict(data)
+                if result.get("mqttServer") and result.get("mqttUserName") and result.get("mqttPassword"):
+                    result["_password_is_plaintext"] = password_is_plaintext
+                    result["_source_endpoint"] = source_endpoint
+                    _LOGGER.debug(
+                        "Jackery MQTT config retrieved via %s endpoint; password_is_plaintext=%s",
+                        source_endpoint,
+                        password_is_plaintext,
+                    )
+                    return result
+                _LOGGER.debug(
+                    "Jackery MQTT config via %s endpoint was incomplete: %s",
+                    source_endpoint,
+                    result,
+                )
+            except Exception as err:
+                last_error = err
+                _LOGGER.debug(
+                    "Jackery MQTT config request via %s endpoint failed: %s",
+                    source_endpoint,
+                    err,
+                )
+
+        if last_error is not None:
+            raise last_error
+        raise JackeryHomeApiError("Unable to retrieve MQTT configuration from Jackery API.")
 
     async def async_build_mqtt_credentials(
         self,
-        crypto_key: str,
+        crypto_key: str | None = None,
         mqtt_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build ready-to-use MQTT credentials from the REST API response.
 
-        The Jackery REST API returns an encoded MQTT credential text that must be
-        decrypted with the integration-wide crypto key supplied by the user.
-        Intentionally verbose debug logging is kept here because this phase is
-        meant to validate the MQTT foundation end-to-end.
+        The newer v2 endpoint may return plaintext MQTT credentials directly.
+        The legacy v1 endpoint still returns an encoded credential value that
+        requires the optional integration crypto key for decoding.
         """
         raw = dict(mqtt_config or await self.async_get_mqtt_credentials())
         host = str(raw.get("mqttServer") or "").strip()
         username = str(raw.get("mqttUserName") or "").strip()
-        encrypted_password = str(raw.get("mqttPassword") or "")
+        mqtt_secret = str(raw.get("mqttPassword") or "")
+        password_is_plaintext = bool(raw.get("_password_is_plaintext"))
+        source_endpoint = str(raw.get("_source_endpoint") or "unknown")
 
         try:
             port = int(raw.get("mqttPort") or MQTT_DEFAULT_PORT)
@@ -186,38 +226,52 @@ class JackeryApiClient:
             port = MQTT_DEFAULT_PORT
 
         _LOGGER.debug(
-            "Jackery MQTT server info from API: host=%s port=%s username=%s encrypted_password=%s raw=%s",
+            "Jackery MQTT server info from API: host=%s port=%s username=%s source_endpoint=%s password_is_plaintext=%s raw=%s",
             host,
             port,
             username,
-            encrypted_password,
+            source_endpoint,
+            password_is_plaintext,
             raw,
         )
-        _LOGGER.debug("Jackery integration crypto key for MQTT decrypt: %s", crypto_key)
 
-        if not host or not username or not encrypted_password:
+        if not host or not username or not mqtt_secret:
             raise JackeryHomeApiError(
                 "The MQTT configuration response did not contain all required fields."
             )
 
-        try:
-            password = decrypt_text(encrypted_password, crypto_key)
-        except Exception as err:
+        password = mqtt_secret
+        if password_is_plaintext:
             _LOGGER.debug(
-                "Jackery MQTT password decrypt failed. host=%s port=%s username=%s encrypted_password=%s crypto_key=%s error=%s",
-                host,
-                port,
-                username,
-                encrypted_password,
-                crypto_key,
-                err,
+                "Jackery MQTT credentials from %s endpoint are ready to use without crypto decode.",
+                source_endpoint,
             )
-            raise
+        else:
+            crypto_key = (crypto_key or "").strip()
+            _LOGGER.debug(
+                "Jackery legacy MQTT credential flow selected; crypto key available=%s",
+                bool(crypto_key),
+            )
+            if not crypto_key:
+                raise JackeryHomeCryptoError(
+                    "Legacy MQTT credential flow requires an integration crypto key."
+                )
+            try:
+                password = decrypt_text(mqtt_secret, crypto_key)
+            except Exception as err:
+                _LOGGER.debug(
+                    "Jackery legacy MQTT credential decode failed. host=%s port=%s username=%s source_endpoint=%s encoded_value=%s crypto_key=%s error=%s",
+                    host,
+                    port,
+                    username,
+                    source_endpoint,
+                    mqtt_secret,
+                    crypto_key,
+                    err,
+                )
+                raise
 
-        _LOGGER.debug(
-            "Jackery decoded MQTT credential value: %s",
-            password,
-        )
+        _LOGGER.debug("Jackery resolved MQTT credential value: %s", password)
 
         return {
             "host": host,
