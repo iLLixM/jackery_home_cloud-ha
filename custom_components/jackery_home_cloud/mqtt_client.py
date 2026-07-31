@@ -9,6 +9,7 @@ mapping is intentionally deferred to later versions.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import json
 import logging
 import ssl
 from typing import Any
@@ -53,6 +54,7 @@ class JackeryMqttClient:
         self._status_callback = status_callback
         self._client: Any | None = None
         self._started = False
+        self._connected = False
 
         if mqtt is None:
             raise JackeryHomeMqttError(
@@ -122,8 +124,10 @@ class JackeryMqttClient:
         self._client.loop_stop()
         self._client.disconnect()
         self._client = None
+        self._connected = False
 
     def _on_connect(self, client: Any, _: Any, __: Any, rc: int) -> None:
+        self._connected = rc == 0
         status = {
             "connected": rc == 0,
             "connection_state": "connected" if rc == 0 else "error",
@@ -141,6 +145,7 @@ class JackeryMqttClient:
         self._schedule_status(status)
 
     def _on_disconnect(self, _: Any, __: Any, rc: int) -> None:
+        self._connected = False
         self._schedule_status(
             {
                 "connected": False,
@@ -160,6 +165,25 @@ class JackeryMqttClient:
             self._hass.async_create_task,
             self._message_callback(message),
         )
+
+
+    async def async_publish_json(self, topic: str, payload: dict[str, Any], *, qos: int = 1) -> None:
+        """Publish a JSON payload to the MQTT broker."""
+        await self._hass.async_add_executor_job(self._sync_publish_json, topic, payload, qos)
+
+    def _sync_publish_json(self, topic: str, payload: dict[str, Any], qos: int = 1) -> None:
+        """Publish a JSON payload using the blocking paho client."""
+        if self._client is None or not self._started or not self._connected:
+            raise JackeryHomeMqttError("MQTT client is not connected.")
+
+        payload_text = json.dumps(payload, separators=(",", ":"))
+        _LOGGER.debug("Publishing Jackery MQTT command to %s: %s", topic, payload_text)
+        info = self._client.publish(topic, payload_text, qos=qos)
+        info.wait_for_publish()
+        if getattr(info, "rc", mqtt.MQTT_ERR_SUCCESS) != mqtt.MQTT_ERR_SUCCESS:
+            raise JackeryHomeMqttError(
+                f"MQTT publish failed with rc={getattr(info, 'rc', 'unknown')}"
+            )
 
     def _schedule_status(self, status: dict[str, Any]) -> None:
         self._hass.loop.call_soon_threadsafe(

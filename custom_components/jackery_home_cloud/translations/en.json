@@ -3,12 +3,10 @@
     "step": {
       "user": {
         "title": "Connect to Jackery Home Cloud",
-        "description": "Enter your Jackery Home Cloud credentials and choose whether MQTT connection should be enabled.",
+        "description": "Enter your Jackery Home Cloud credentials.",
         "data": {
           "account": "Account",
-          "password": "Password",
-          "phone_uid": "Phone UID",
-          "enable_mqtt": "Enable MQTT connection"
+          "password": "Password"
         }
       },
       "systems": {
@@ -17,9 +15,8 @@
         "data": {
           "selected_systems": "Systems",
           "enable_mqtt": "Enable MQTT connection",
-          "mqtt_debug_raw": "Enable MQTT raw debug logging",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "crypto_key": "Crypto key (legacy fallback only)"
+          "mqtt_debug_raw": "Enable MQTT raw debug logging"
         }
       },
       "reauth_confirm": {
@@ -35,12 +32,11 @@
       },
       "reconfigure": {
         "title": "Reconfigure Jackery Home Cloud",
-        "description": "Update credentials or connection settings",
+        "description": "Update credentials and the API client identifier. MQTT settings are configured in the next step.",
         "data": {
           "account": "Account",
           "password": "Password",
-          "phone_uid": "Phone UID",
-          "enable_mqtt": "Enable MQTT connection"
+          "phone_uid": "Phone UID"
         }
       },
       "reconfigure_systems": {
@@ -49,9 +45,8 @@
         "data": {
           "selected_systems": "Systems",
           "enable_mqtt": "Enable MQTT connection",
-          "mqtt_debug_raw": "Enable MQTT raw debug logging",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "crypto_key": "Crypto key (legacy fallback only)"
+          "mqtt_debug_raw": "Enable MQTT raw debug logging"
         }
       }
     },
@@ -79,12 +74,8 @@
         "data": {
           "selected_systems": "Systems",
           "enable_mqtt": "Enable MQTT connection",
-          "mqtt_debug_raw": "Enable MQTT raw debug logging",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "crypto_key": "Integration crypto key (legacy fallback only)"
-        },
-        "data_description": {
-          "crypto_key": "Optional unless MQTT foundation is enabled. The key is used to decode Jackery credential values such as the encoded MQTT credential returned by the REST API."
+          "mqtt_debug_raw": "Enable MQTT raw debug logging"
         }
       }
     },

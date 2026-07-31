@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import logging
 from typing import Any
 
@@ -82,22 +82,18 @@ def _system_options(systems: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def _credential_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
-    """Build the first config step schema for new setups without MQTT toggle."""
+    """Build the initial credential schema with an automatically generated phone UID."""
     defaults = defaults or {}
     return vol.Schema(
         {
             vol.Required(CONF_ACCOUNT, default=str(defaults.get(CONF_ACCOUNT, ""))): str,
             vol.Required(CONF_PASSWORD): str,
-            vol.Optional(
-                CONF_PHONE_UID,
-                default=str(defaults.get(CONF_PHONE_UID, "")),
-            ): str,
         }
     )
 
 
 def _reconfigure_credential_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
-    """Build the first reconfigure step schema with MQTT toggle preserved."""
+    """Build the reconfigure credential schema with an editable phone UID."""
     defaults = defaults or {}
     return vol.Schema(
         {
@@ -107,10 +103,6 @@ def _reconfigure_credential_schema(defaults: Mapping[str, Any] | None = None) ->
                 CONF_PHONE_UID,
                 default=str(defaults.get(CONF_PHONE_UID, "")),
             ): str,
-            vol.Required(
-                CONF_ENABLE_MQTT,
-                default=bool(defaults.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT)),
-            ): bool,
         }
     )
 
@@ -157,16 +149,12 @@ def _systems_mqtt_schema(
                 default=bool(defaults.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT)),
             ): bool,
             vol.Optional(
-                CONF_CRYPTO_KEY,
-                default=str(defaults.get(CONF_CRYPTO_KEY, "")),
-            ): str,
+                CONF_MQTT_TLS_INSECURE,
+                default=bool(defaults.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE)),
+            ): bool,
             vol.Optional(
                 CONF_MQTT_DEBUG_RAW,
                 default=bool(defaults.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW)),
-            ): bool,
-            vol.Optional(
-                CONF_MQTT_TLS_INSECURE,
-                default=bool(defaults.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE)),
             ): bool,
         }
     )
@@ -257,8 +245,6 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         defaults = {
             CONF_ACCOUNT: self._pending_entry_data.get(CONF_ACCOUNT, ""),
-            CONF_PHONE_UID: self._pending_entry_data.get(CONF_PHONE_UID, ""),
-            CONF_ENABLE_MQTT: self._pending_options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
         }
         return self.async_show_form(
             step_id="user",
@@ -279,7 +265,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if str(system_id)
             ]
             enable_mqtt = bool(user_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT))
-            crypto_key = str(user_input.get(CONF_CRYPTO_KEY, "")).strip()
+            crypto_key = str(self._pending_options.get(CONF_CRYPTO_KEY, "")).strip()
             mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, False))
             mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
 
@@ -306,11 +292,12 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     {
                         CONF_SELECTED_SYSTEMS: selected_systems,
                         CONF_ENABLE_MQTT: enable_mqtt,
-                        CONF_CRYPTO_KEY: crypto_key,
-                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
                         CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
+                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
                     }
                 )
+                if crypto_key:
+                    self._pending_options[CONF_CRYPTO_KEY] = crypto_key
                 return self.async_create_entry(
                     title=self._entry_title,
                     data=self._pending_entry_data,
@@ -327,7 +314,6 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ],
             ),
             CONF_ENABLE_MQTT: self._pending_options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
-            CONF_CRYPTO_KEY: self._pending_options.get(CONF_CRYPTO_KEY, ""),
             CONF_MQTT_DEBUG_RAW: self._pending_options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
             CONF_MQTT_TLS_INSECURE: self._pending_options.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE),
         }
@@ -403,9 +389,6 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_PHONE_UID: prepared_input[CONF_PHONE_UID],
                     }
                     self._pending_options = dict(entry.options)
-                    self._pending_options[CONF_ENABLE_MQTT] = bool(
-                        prepared_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT)
-                    )
                     self._discovered_systems = systems
                     self._discovered_mqtt_config = mqtt_config
                     return await self.async_step_reconfigure_systems()
@@ -413,7 +396,6 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         defaults = {
             CONF_ACCOUNT: entry.data.get(CONF_ACCOUNT, ""),
             CONF_PHONE_UID: entry.data.get(CONF_PHONE_UID, ""),
-            CONF_ENABLE_MQTT: entry.options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
         }
         return self.async_show_form(
             step_id="reconfigure",
@@ -435,7 +417,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if str(system_id)
             ]
             enable_mqtt = bool(user_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT))
-            crypto_key = str(user_input.get(CONF_CRYPTO_KEY, "")).strip()
+            crypto_key = str(self._pending_options.get(CONF_CRYPTO_KEY, entry.options.get(CONF_CRYPTO_KEY, ""))).strip()
             mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, False))
             mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
 
@@ -458,21 +440,25 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         errors["base"] = "invalid_crypto_key"
 
             if not errors:
-                new_data = {
-                    CONF_ACCOUNT: self._pending_entry_data[CONF_ACCOUNT],
-                    CONF_PASSWORD: self._pending_entry_data[CONF_PASSWORD],
-                    CONF_PHONE_UID: self._pending_entry_data[CONF_PHONE_UID],
-                }
+                new_data = dict(entry.data)
+                new_data.update(
+                    {
+                        CONF_ACCOUNT: self._pending_entry_data[CONF_ACCOUNT],
+                        CONF_PASSWORD: self._pending_entry_data[CONF_PASSWORD],
+                        CONF_PHONE_UID: self._pending_entry_data[CONF_PHONE_UID],
+                    }
+                )
                 new_options = dict(self._pending_options)
                 new_options.update(
                     {
                         CONF_SELECTED_SYSTEMS: selected_systems,
                         CONF_ENABLE_MQTT: enable_mqtt,
-                        CONF_CRYPTO_KEY: crypto_key,
-                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
                         CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
+                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
                     }
                 )
+                if crypto_key:
+                    new_options[CONF_CRYPTO_KEY] = crypto_key
                 self.hass.config_entries.async_update_entry(
                     entry,
                     data=new_data,
@@ -489,10 +475,6 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ENABLE_MQTT: self._pending_options.get(
                 CONF_ENABLE_MQTT,
                 entry.options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
-            ),
-            CONF_CRYPTO_KEY: self._pending_options.get(
-                CONF_CRYPTO_KEY,
-                entry.options.get(CONF_CRYPTO_KEY, ""),
             ),
             CONF_MQTT_DEBUG_RAW: self._pending_options.get(
                 CONF_MQTT_DEBUG_RAW,
@@ -561,7 +543,7 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
         if systems and user_input is not None:
             selected = [str(item) for item in user_input.get(CONF_SELECTED_SYSTEMS, [])]
             enable_mqtt = bool(user_input.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT))
-            crypto_key = str(user_input.get(CONF_CRYPTO_KEY, "")).strip()
+            crypto_key = str(self.config_entry.options.get(CONF_CRYPTO_KEY, "")).strip()
             mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW))
             mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
 
@@ -578,37 +560,38 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
                         errors["base"] = "invalid_crypto_key"
 
             if not errors:
-                data = {
-                    CONF_SELECTED_SYSTEMS: selected,
-                    CONF_ENABLE_MQTT: enable_mqtt,
-                }
-                if enable_mqtt:
-                    data.update(
-                        {
-                            CONF_CRYPTO_KEY: crypto_key,
-                            CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
-                            CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
-                        }
-                    )
+                data = dict(self.config_entry.options)
+                data.update(
+                    {
+                        CONF_SELECTED_SYSTEMS: selected,
+                        CONF_ENABLE_MQTT: enable_mqtt,
+                        CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
+                        CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                    }
+                )
+                if crypto_key:
+                    data[CONF_CRYPTO_KEY] = crypto_key
                 return self.async_create_entry(data=data)
 
         current_selection = self.config_entry.options.get(CONF_SELECTED_SYSTEMS, [])
         current_options = {
             CONF_ENABLE_MQTT: self.config_entry.options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
-            CONF_CRYPTO_KEY: self.config_entry.options.get(CONF_CRYPTO_KEY, ""),
+            CONF_MQTT_TLS_INSECURE: self.config_entry.options.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE),
             CONF_MQTT_DEBUG_RAW: self.config_entry.options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
-            CONF_MQTT_TLS_INSECURE: self.config_entry.options.get(CONF_MQTT_TLS_INSECURE, False),
         }
 
         schema = vol.Schema(
             {
                 **_systems_schema(systems, list(current_selection)).schema,
                 vol.Required(CONF_ENABLE_MQTT, default=bool(current_options[CONF_ENABLE_MQTT])): bool,
-                vol.Optional(CONF_CRYPTO_KEY, default=str(current_options[CONF_CRYPTO_KEY])): selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-                ),
-                vol.Required(CONF_MQTT_DEBUG_RAW, default=bool(current_options[CONF_MQTT_DEBUG_RAW])): bool,
-                vol.Optional(CONF_MQTT_TLS_INSECURE, default=bool(current_options[CONF_MQTT_TLS_INSECURE])): bool,
+                vol.Optional(
+                    CONF_MQTT_TLS_INSECURE,
+                    default=bool(current_options[CONF_MQTT_TLS_INSECURE]),
+                ): bool,
+                vol.Optional(
+                    CONF_MQTT_DEBUG_RAW,
+                    default=bool(current_options[CONF_MQTT_DEBUG_RAW]),
+                ): bool,
             }
         )
 

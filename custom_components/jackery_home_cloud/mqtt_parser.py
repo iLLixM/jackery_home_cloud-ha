@@ -48,3 +48,56 @@ def parse_mqtt_payload(topic: str, payload: bytes) -> dict[str, Any]:
         message["method"] = _search_key(payload_json, "method")
 
     return message
+
+
+def extract_ems_meter_value(
+    payload: Mapping[str, Any],
+    *,
+    device_serial: str,
+    meter_id: str,
+) -> float | None:
+    """Extract a single EMS meter value from a MQTT data_report payload.
+
+    The helper only evaluates MQTT payloads with cmd=data_report and the EMS
+    device node matching ``ems_<device_serial>``.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+
+    if str(payload.get("cmd") or "") != "data_report":
+        return None
+
+    info = payload.get("info")
+    if not isinstance(info, Mapping):
+        return None
+
+    dev_list = info.get("dev_list")
+    if not isinstance(dev_list, list):
+        return None
+
+    expected_dev_sn = f"ems_{str(device_serial).strip()}"
+    normalized_meter_id = str(meter_id)
+
+    for dev in dev_list:
+        if not isinstance(dev, Mapping):
+            continue
+        if str(dev.get("dev_sn") or "").strip() != expected_dev_sn:
+            continue
+
+        meter_list = dev.get("meter_list")
+        if not isinstance(meter_list, list):
+            return None
+
+        for item in meter_list:
+            if (
+                isinstance(item, list)
+                and len(item) >= 2
+                and str(item[0]) == normalized_meter_id
+            ):
+                try:
+                    return float(item[1])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    return None

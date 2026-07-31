@@ -24,10 +24,18 @@ from .const import (
     CONF_SELECTED_SYSTEMS,
     DAILY_TREND_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
+    MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
+    MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
+    MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
+    MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
+    MQTT_EMS_PV_TOTAL_CHARGE_METER_ID,
+    MQTT_EMS_AC_OUTPUT_METER_ID,
+    MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
     TREND_DATE_FORMAT,
     UPDATE_INTERVAL_SECONDS,
 )
 from .exceptions import JackeryHomeApiError, JackeryHomeAuthError
+from .mqtt_parser import extract_ems_meter_value
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +53,7 @@ _BATTERY_ALLOWED_DECREASE_TOLERANCE_KWH = 0.05
 # backend mixes rounded values and slightly different aggregation paths.
 _SOURCE_MATCH_MIN_TOLERANCE_KWH = 0.05
 _SOURCE_MATCH_RELATIVE_TOLERANCE = 0.10
+_MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH = 0.01
 
 
 @dataclass(slots=True)
@@ -108,6 +117,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_dev_sn": None,
             "last_method": None,
         }
+        self._mqtt_live_values: dict[str, dict[str, Any]] = {}
 
     @property
     def mqtt_credentials(self) -> dict[str, Any]:
@@ -150,7 +160,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         bundles: dict[str, dict[str, Any]] = {}
         for system_id, bundle in system_results:
             bundle["mqtt_state"] = dict(self._mqtt_state)
-            bundles[system_id] = bundle
+            bundles[system_id] = self._apply_mqtt_live_values_to_bundle(system_id, bundle)
 
         return {
             "account": self._account,
@@ -428,14 +438,62 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return trend_cluster_daily, battery_bms_daily
 
     async def async_handle_mqtt_status(self, status: Mapping[str, Any]) -> None:
+        was_connected = bool(self._mqtt_state.get("connected", False))
+        now_connected = bool(status.get("connected", False))
         self._mqtt_state.update(
             {
-                "connected": bool(status.get("connected", False)),
+                "connected": now_connected,
                 "connection_state": status.get("connection_state") or self._mqtt_state.get("connection_state"),
                 "error": status.get("error"),
             }
         )
+        if now_connected and not was_connected:
+            await self.async_request_ac_output_states()
         self._publish_runtime_update()
+
+
+    async def async_request_ac_output_states(self) -> None:
+        """Request AC output states for all selected systems via MQTT."""
+        mqtt_client = getattr(getattr(self.config_entry, "runtime_data", None), "mqtt_client", None)
+        if mqtt_client is None:
+            return
+
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        for system_id, bundle in systems.items():
+            if not isinstance(bundle, Mapping):
+                continue
+
+            device_sn = self._extract_system_device_sn(bundle)
+            if not device_sn:
+                continue
+
+            topic = self._mqtt_command_topic(device_sn)
+            payload = {
+                "cmd": "data_get",
+                "gw_sn": device_sn,
+                "timestamp": _mqtt_timestamp_ms(),
+                "info": {
+                    "dev_list": [
+                        {
+                            "dev_sn": f"ems_{device_sn}",
+                            "meter_list": [MQTT_EMS_AC_OUTPUT_METER_ID],
+                        }
+                    ]
+                },
+            }
+            try:
+                await mqtt_client.async_publish_json(topic, payload, qos=1)
+                _LOGGER.debug(
+                    "Requested Jackery AC output state for %s via MQTT topic %s",
+                    system_id,
+                    topic,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed to request Jackery AC output state for %s: %s",
+                    system_id,
+                    err,
+                )
 
     async def async_handle_mqtt_message(self, message: Mapping[str, Any]) -> None:
         payload_text = message.get("payload_text")
@@ -454,19 +512,528 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "last_method": message.get("method"),
             }
         )
+
+        try:
+            self._ingest_mqtt_live_values(message)
+        except Exception as err:
+            _LOGGER.exception("Failed to ingest Jackery MQTT live values: %s", err)
+
+        try:
+            self._ingest_mqtt_control_values(message)
+        except Exception as err:
+            _LOGGER.exception("Failed to ingest Jackery MQTT control values: %s", err)
+
+        try:
+            self._ingest_mqtt_connection_values(message)
+        except Exception as err:
+            _LOGGER.exception("Failed to ingest Jackery MQTT connection values: %s", err)
+
         self._publish_runtime_update()
+
+
+    def _ingest_mqtt_control_values(self, message: Mapping[str, Any]) -> None:
+        """Extract selected control values from MQTT data_get/data_set responses."""
+        payload = message.get("payload_json")
+        if not isinstance(payload, Mapping):
+            return
+
+        cmd = str(payload.get("cmd") or "").strip()
+        if cmd not in ("data_get", "data_set"):
+            return
+
+        gw_sn = str(payload.get("gw_sn") or "").strip()
+        if not gw_sn:
+            return
+
+        system_id = self._resolve_system_id_from_gw_sn(gw_sn)
+        if not system_id:
+            return
+
+        ac_output_value = self._extract_ac_output_state(payload, gw_sn)
+        if ac_output_value is None:
+            _LOGGER.debug(
+                "Ignoring MQTT AC output state payload for %s because meter %s was not found in cmd=%s payload",
+                system_id,
+                MQTT_EMS_AC_OUTPUT_METER_ID,
+                cmd,
+            )
+            return
+
+        is_on = ac_output_value == "1"
+        existing = self._mqtt_live_values.get(system_id, {})
+        updated = dict(existing)
+        updated.update(
+            {
+                "ac_output_state": is_on,
+                "ac_output_state_at": dt_util.utcnow(),
+                "ac_output_state_source": f"mqtt_{cmd}",
+            }
+        )
+        self._mqtt_live_values[system_id] = updated
+        _LOGGER.debug(
+            "Accepted MQTT AC output state for %s via %s: raw=%s is_on=%s",
+            system_id,
+            cmd,
+            ac_output_value,
+            is_on,
+        )
+
+
+    def _ingest_mqtt_connection_values(self, message: Mapping[str, Any]) -> None:
+        """Extract device connection state from MQTT LWT topic payloads."""
+        payload = message.get("payload_json")
+        if not isinstance(payload, Mapping):
+            return
+
+        gw_sn = str(payload.get("gw_sn") or "").strip()
+        if not gw_sn:
+            return
+
+        info = str(payload.get("info") or "").strip().lower()
+        if info not in ("online", "offline"):
+            return
+
+        system_id = self._resolve_system_id_from_gw_sn(gw_sn)
+        if not system_id:
+            return
+
+        existing = self._mqtt_live_values.get(system_id, {})
+        updated = dict(existing)
+        updated.update(
+            {
+                "device_connection": info,
+                "device_connection_at": dt_util.utcnow(),
+                "device_connection_source": "mqtt_lwt",
+            }
+        )
+        self._mqtt_live_values[system_id] = updated
+        _LOGGER.debug(
+            "Accepted MQTT device connection state for %s: %s",
+            system_id,
+            info,
+        )
 
     def _publish_runtime_update(self) -> None:
         if not self.data:
             return
         new_data = dict(self.data)
         new_data["mqtt_state"] = dict(self._mqtt_state)
-        systems = {
-            system_id: {**bundle, "mqtt_state": dict(self._mqtt_state)}
-            for system_id, bundle in self.data.get("systems", {}).items()
-        }
+        systems = {}
+        for system_id, bundle in self.data.get("systems", {}).items():
+            merged_bundle = {**bundle, "mqtt_state": dict(self._mqtt_state)}
+            systems[system_id] = self._apply_mqtt_live_values_to_bundle(system_id, merged_bundle)
         new_data["systems"] = systems
         self.async_set_updated_data(new_data)
+
+    def _ingest_mqtt_live_values(self, message: Mapping[str, Any]) -> None:
+        """Extract selected live values from MQTT data_report payloads."""
+        payload = message.get("payload_json")
+        if not isinstance(payload, Mapping):
+            return
+        if str(payload.get("cmd") or "") != "data_report":
+            return
+
+        gw_sn = str(payload.get("gw_sn") or "").strip()
+        if not gw_sn:
+            return
+
+        system_id = self._resolve_system_id_from_gw_sn(gw_sn)
+        if not system_id:
+            _LOGGER.debug(
+                "Ignoring Jackery MQTT data_report for unknown gw_sn=%s",
+                gw_sn,
+            )
+            return
+
+        battery_charged_total = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
+        )
+        battery_discharged_total = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
+        )
+        pv1_energy_total = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
+        )
+        pv2_energy_total = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
+        )
+        total_pv_charge = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_PV_TOTAL_CHARGE_METER_ID,
+        )
+        if (
+            battery_charged_total is None
+            and battery_discharged_total is None
+            and pv1_energy_total is None
+            and pv2_energy_total is None
+            and total_pv_charge is None
+        ):
+            return
+
+        day_key = self._resolve_system_day_key(system_id)
+        existing = self._mqtt_live_values.get(system_id, {})
+        updated = dict(existing)
+
+        if battery_charged_total is not None:
+            previous_value = _coerce_float(existing.get("battery_energy_charged_total"))
+            if previous_value is not None and battery_charged_total + _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT battery charged total for %s: incoming=%s previous=%s",
+                    system_id,
+                    battery_charged_total,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "battery_energy_charged_total": battery_charged_total,
+                        "battery_energy_charged_total_at": dt_util.utcnow(),
+                        "battery_energy_charged_total_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT battery charged total for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
+                    battery_charged_total,
+                )
+
+        if battery_discharged_total is not None:
+            previous_value = _coerce_float(existing.get("battery_energy_discharged_total"))
+            if previous_value is not None and battery_discharged_total + _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT battery discharged total for %s: incoming=%s previous=%s",
+                    system_id,
+                    battery_discharged_total,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "battery_energy_discharged_total": battery_discharged_total,
+                        "battery_energy_discharged_total_at": dt_util.utcnow(),
+                        "battery_energy_discharged_total_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT battery discharged total for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
+                    battery_discharged_total,
+                )
+
+        if pv1_energy_total is not None:
+            previous_value = _coerce_float(existing.get("pv1_energy_total"))
+            if previous_value is not None and pv1_energy_total + _BATTERY_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT PV1 energy total value for %s: incoming=%s previous=%s",
+                    system_id,
+                    pv1_energy_total,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "pv1_energy_total": pv1_energy_total,
+                        "pv1_energy_total_at": dt_util.utcnow(),
+                        "pv1_energy_total_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT PV1 energy total for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
+                    pv1_energy_total,
+                )
+
+        if pv2_energy_total is not None:
+            previous_value = _coerce_float(existing.get("pv2_energy_total"))
+            if previous_value is not None and pv2_energy_total + _BATTERY_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT PV2 energy total value for %s: incoming=%s previous=%s",
+                    system_id,
+                    pv2_energy_total,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "pv2_energy_total": pv2_energy_total,
+                        "pv2_energy_total_at": dt_util.utcnow(),
+                        "pv2_energy_total_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT PV2 energy total for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
+                    pv2_energy_total,
+                )
+
+        if total_pv_charge is not None:
+            previous_value = _coerce_float(existing.get("total_pv_charge"))
+            if previous_value is not None and total_pv_charge + _BATTERY_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT total PV charge value for %s: incoming=%s previous=%s",
+                    system_id,
+                    total_pv_charge,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "total_pv_charge": total_pv_charge,
+                        "total_pv_charge_at": dt_util.utcnow(),
+                        "total_pv_charge_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT total PV charge for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_PV_TOTAL_CHARGE_METER_ID,
+                    total_pv_charge,
+                )
+
+        self._mqtt_live_values[system_id] = updated
+
+    def _extract_ac_output_state(self, payload: Mapping[str, Any], gw_sn: str) -> str | None:
+        """Return the raw AC output state from an MQTT control payload."""
+        info = payload.get("info")
+        if not isinstance(info, Mapping):
+            return None
+
+        dev_list = info.get("dev_list")
+        if not isinstance(dev_list, list):
+            return None
+
+        expected_dev_sn = f"ems_{gw_sn}"
+        for dev in dev_list:
+            if not isinstance(dev, Mapping):
+                continue
+            dev_sn = str(dev.get("dev_sn") or "").strip()
+            if dev_sn != expected_dev_sn:
+                continue
+
+            meter_list = dev.get("meter_list")
+            if not isinstance(meter_list, list):
+                continue
+
+            for item in meter_list:
+                if not isinstance(item, list) or len(item) < 2:
+                    continue
+                meter_id = str(item[0]).strip()
+                meter_value = str(item[1]).strip()
+                if meter_id == MQTT_EMS_AC_OUTPUT_METER_ID and meter_value in ("0", "1"):
+                    return meter_value
+
+        return None
+
+    def _resolve_system_id_from_gw_sn(self, gw_sn: str) -> str | None:
+        """Map a MQTT gw_sn to a selected system id."""
+        normalized = str(gw_sn).strip()
+        if not normalized:
+            return None
+
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        for system_id, bundle in systems.items():
+            if not isinstance(bundle, Mapping):
+                continue
+
+            candidates = [
+                bundle.get("system", {}).get("systemNo") if isinstance(bundle.get("system"), Mapping) else None,
+                bundle.get("system", {}).get("deviceNo") if isinstance(bundle.get("system"), Mapping) else None,
+                bundle.get("system", {}).get("sn") if isinstance(bundle.get("system"), Mapping) else None,
+            ]
+            for candidate in candidates:
+                if str(candidate or "").strip() == normalized:
+                    return str(system_id)
+
+        available_systems = self.data.get("available_systems", {}) if isinstance(self.data, Mapping) else {}
+        for system_id, system in available_systems.items():
+            if not isinstance(system, Mapping):
+                continue
+            for key in ("systemNo", "deviceNo", "sn"):
+                if str(system.get(key) or "").strip() == normalized:
+                    return str(system_id)
+
+        return None
+
+
+    def _extract_system_device_sn(self, bundle: Mapping[str, Any]) -> str:
+        """Return the primary device serial used for Jackery MQTT commands."""
+        for key in ("main_device_serial", "system_no", "systemNo", "serial_number"):
+            value = bundle.get(key)
+            if value:
+                return str(value).strip()
+
+        system = bundle.get("system", {})
+        if isinstance(system, Mapping):
+            for key in ("systemNo", "deviceNo", "sn"):
+                value = system.get(key)
+                if value:
+                    return str(value).strip()
+
+        return ""
+
+    def _mqtt_command_topic(self, device_sn: str) -> str:
+        """Return the MQTT command topic for a device serial."""
+        from .const import MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE
+        return MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=device_sn)
+
+    def _resolve_system_day_key(self, system_id: str) -> str:
+        """Return the current local day key for a selected system."""
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        bundle = systems.get(system_id, {}) if isinstance(systems, Mapping) else {}
+        monitor = bundle.get("monitor") if isinstance(bundle, Mapping) else None
+        if isinstance(monitor, Mapping):
+            return _system_local_day_key(monitor)
+        return dt_util.utcnow().strftime(TREND_DATE_FORMAT)
+
+    def _apply_mqtt_live_values_to_bundle(
+        self,
+        system_id: str,
+        bundle: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Merge fresh MQTT live values into a system bundle."""
+        merged = dict(bundle)
+        live = self._mqtt_live_values.get(system_id)
+        if not isinstance(live, Mapping):
+            return merged
+
+        now = dt_util.utcnow()
+        bundle_day_key = merged.get("trend_day_key")
+        daily_energy = dict(merged.get("daily_energy") or {})
+        mqtt_live = dict(merged.get("mqtt_live") or {})
+
+        charged_timestamp = live.get("battery_energy_charged_today_at")
+        charged_day_key = live.get("battery_energy_charged_today_day_key")
+        charged_value = _coerce_float(live.get("battery_energy_charged_today"))
+        if charged_value is not None and charged_timestamp is not None:
+            charged_age_seconds = (now - charged_timestamp).total_seconds()
+            if charged_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS and bundle_day_key in (None, charged_day_key):
+                daily_energy["battery_energy_charged_today"] = charged_value
+                mqtt_live["battery_energy_charged_today"] = {
+                    "value": charged_value,
+                    "source": "mqtt",
+                    "day_key": charged_day_key,
+                    "age_seconds": charged_age_seconds,
+                }
+
+        discharged_timestamp = live.get("battery_energy_discharged_today_at")
+        discharged_day_key = live.get("battery_energy_discharged_today_day_key")
+        discharged_value = _coerce_float(live.get("battery_energy_discharged_today"))
+        if discharged_value is not None and discharged_timestamp is not None:
+            discharged_age_seconds = (now - discharged_timestamp).total_seconds()
+            if discharged_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS and bundle_day_key in (None, discharged_day_key):
+                daily_energy["battery_energy_discharged_today"] = discharged_value
+                mqtt_live["battery_energy_discharged_today"] = {
+                    "value": discharged_value,
+                    "source": "mqtt",
+                    "day_key": discharged_day_key,
+                    "age_seconds": discharged_age_seconds,
+                }
+
+        charged_total_timestamp = live.get("battery_energy_charged_total_at")
+        charged_total_value = _coerce_float(live.get("battery_energy_charged_total"))
+        if charged_total_value is not None and charged_total_timestamp is not None:
+            charged_total_age_seconds = (now - charged_total_timestamp).total_seconds()
+            if charged_total_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["battery_energy_charged_total"] = charged_total_value
+                mqtt_live["battery_energy_charged_total"] = {
+                    "value": charged_total_value,
+                    "source": "mqtt",
+                    "age_seconds": charged_total_age_seconds,
+                }
+
+        discharged_total_timestamp = live.get("battery_energy_discharged_total_at")
+        discharged_total_value = _coerce_float(live.get("battery_energy_discharged_total"))
+        if discharged_total_value is not None and discharged_total_timestamp is not None:
+            discharged_total_age_seconds = (now - discharged_total_timestamp).total_seconds()
+            if discharged_total_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["battery_energy_discharged_total"] = discharged_total_value
+                mqtt_live["battery_energy_discharged_total"] = {
+                    "value": discharged_total_value,
+                    "source": "mqtt",
+                    "age_seconds": discharged_total_age_seconds,
+                }
+
+        pv1_total_timestamp = live.get("pv1_energy_total_at")
+        pv1_total_value = _coerce_float(live.get("pv1_energy_total"))
+        if pv1_total_value is not None and pv1_total_timestamp is not None:
+            pv1_total_age_seconds = (now - pv1_total_timestamp).total_seconds()
+            if pv1_total_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["pv1_energy_total"] = pv1_total_value
+                mqtt_live["pv1_energy_total"] = {
+                    "value": pv1_total_value,
+                    "source": "mqtt",
+                    "age_seconds": pv1_total_age_seconds,
+                }
+
+        pv2_total_timestamp = live.get("pv2_energy_total_at")
+        pv2_total_value = _coerce_float(live.get("pv2_energy_total"))
+        if pv2_total_value is not None and pv2_total_timestamp is not None:
+            pv2_total_age_seconds = (now - pv2_total_timestamp).total_seconds()
+            if pv2_total_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["pv2_energy_total"] = pv2_total_value
+                mqtt_live["pv2_energy_total"] = {
+                    "value": pv2_total_value,
+                    "source": "mqtt",
+                    "age_seconds": pv2_total_age_seconds,
+                }
+
+        total_pv_charge_timestamp = live.get("total_pv_charge_at")
+        total_pv_charge_value = _coerce_float(live.get("total_pv_charge"))
+        if total_pv_charge_value is not None and total_pv_charge_timestamp is not None:
+            total_pv_charge_age_seconds = (now - total_pv_charge_timestamp).total_seconds()
+            if total_pv_charge_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["total_pv_charge"] = total_pv_charge_value
+                mqtt_live["total_pv_charge"] = {
+                    "value": total_pv_charge_value,
+                    "source": "mqtt",
+                    "age_seconds": total_pv_charge_age_seconds,
+                }
+
+        if daily_energy:
+            merged["daily_energy"] = daily_energy
+        ac_output_timestamp = live.get("ac_output_state_at")
+        ac_output_value = live.get("ac_output_state")
+        if isinstance(ac_output_value, bool):
+            merged["ac_output_state"] = ac_output_value
+            ac_output_age_seconds = None
+            if ac_output_timestamp is not None:
+                ac_output_age_seconds = (now - ac_output_timestamp).total_seconds()
+            mqtt_live["ac_output_state"] = {
+                "value": ac_output_value,
+                "source": live.get("ac_output_state_source", "mqtt"),
+                "age_seconds": ac_output_age_seconds,
+            }
+
+        device_connection_timestamp = live.get("device_connection_at")
+        device_connection_value = live.get("device_connection")
+        if isinstance(device_connection_value, str):
+            merged["device_connection"] = device_connection_value
+            device_connection_age_seconds = None
+            if device_connection_timestamp is not None:
+                device_connection_age_seconds = (now - device_connection_timestamp).total_seconds()
+            mqtt_live["device_connection"] = {
+                "value": device_connection_value,
+                "source": live.get("device_connection_source", "mqtt_lwt"),
+                "age_seconds": device_connection_age_seconds,
+            }
+
+        if mqtt_live:
+            merged["mqtt_live"] = mqtt_live
+        return merged
+
     async def _async_api_call(
         self,
         func: Callable[..., Awaitable[Any]],
@@ -903,6 +1470,11 @@ def _safe_get(data: Any, *path: str) -> Any:
         if current is None:
             return None
     return current
+
+
+def _mqtt_timestamp_ms() -> str:
+    """Return a Unix timestamp in milliseconds as a string."""
+    return str(int(dt_util.utcnow().timestamp() * 1000))
 
 
 def _coerce_float(value: Any) -> float | None:

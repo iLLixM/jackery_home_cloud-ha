@@ -18,11 +18,20 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import CONF_ENABLE_MQTT, DOMAIN, MANUFACTURER, MODEL_NAME_MAP
 from .coordinator import JackeryHomeCloudCoordinator
 
 PARALLEL_UPDATES = 0
+
+MQTT_RESTORE_SENSOR_KEYS: set[str] = {
+    "battery_energy_charged_total",
+    "battery_energy_discharged_total",
+    "pv1_energy_total",
+    "pv2_energy_total",
+    "total_pv_charge",
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -37,6 +46,7 @@ class JackeryMetricDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any]
     unique_id_fn: Callable[[str, dict[str, Any]], str]
     entity_category: EntityCategory | None = None
+    requires_mqtt: bool = False
 
 
 SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
@@ -177,7 +187,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=2,
+        suggested_display_precision=3,
         value_fn=lambda bundle: _daily_energy(bundle, "battery_energy_charged_today"),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
@@ -187,8 +197,30 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=2,
+        suggested_display_precision=3,
         value_fn=lambda bundle: _daily_energy(bundle, "battery_energy_discharged_today"),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="battery_energy_charged_total",
+        name="Battery charged",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("battery_energy_charged_total")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="battery_energy_discharged_total",
+        name="Battery discharged",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("battery_energy_discharged_total")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
@@ -232,6 +264,39 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
+        key="pv1_energy_total",
+        name="PV1 energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv1_energy_total")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pv2_energy_total",
+        name="PV2 energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv2_energy_total")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="total_pv_charge",
+        name="Total PV charge",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("total_pv_charge")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
         key="on_grid_energy_exported_today",
         name="On-grid energy exported today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -261,6 +326,14 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
+        key="device_connection",
+        name="Device connection",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        requires_mqtt=True,
+        value_fn=lambda bundle: bundle.get("device_connection"),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
         key="mqtt_connection_status",
         name="MQTT connection status",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -271,6 +344,8 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         key="mqtt_message_count",
         name="MQTT message count",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda bundle: _coerce_int(_safe_get(bundle, "mqtt_state", "message_count")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
@@ -280,6 +355,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         name="MQTT last topic",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
+        requires_mqtt=True,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "last_topic"),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
@@ -289,6 +365,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
+        requires_mqtt=True,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "last_message_at"),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
@@ -333,7 +410,7 @@ def _build_entities(
 
     for system_id, bundle in systems.items():
         for description in SYSTEM_SENSOR_DESCRIPTIONS:
-            if not mqtt_enabled and description.key.startswith("mqtt_"):
+            if description.requires_mqtt and not mqtt_enabled:
                 continue
             entities.append(
                 JackeryMetricSensor(
@@ -393,7 +470,7 @@ class JackeryBaseSensor(CoordinatorEntity[JackeryHomeCloudCoordinator], SensorEn
         return self.coordinator.data.get("systems", {}).get(self._system_id)
 
 
-class JackeryMetricSensor(JackeryBaseSensor):
+class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
     """Sensor based on a metric description."""
 
     entity_description: JackeryMetricDescription
@@ -412,14 +489,38 @@ class JackeryMetricSensor(JackeryBaseSensor):
         self._attr_unique_id = f"{unique_source}_{description.key}"
         self._attr_name = description.name
         self._attr_entity_category = description.entity_category
+        self._restored_native_value: Any | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known state for selected MQTT-only sensors."""
+        await super().async_added_to_hass()
+
+        if self.entity_description.key not in MQTT_RESTORE_SENSOR_KEYS:
+            return
+
+        last_state = await self.async_get_last_state()
+        if last_state is None:
+            return
+        if last_state.state in ("unknown", "unavailable", "", None):
+            return
+
+        try:
+            self._restored_native_value = float(last_state.state)
+        except (TypeError, ValueError):
+            self._restored_native_value = last_state.state
 
     @property
     def native_value(self) -> Any:
         """Return the current metric value from the coordinator snapshot."""
         bundle = self._system_bundle
-        if not bundle:
-            return None
-        return self.entity_description.value_fn(bundle)
+        current_value = None
+        if bundle:
+            current_value = self.entity_description.value_fn(bundle)
+        if current_value is not None:
+            return current_value
+        if self.entity_description.key in MQTT_RESTORE_SENSOR_KEYS:
+            return self._restored_native_value
+        return None
 
 
 def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:
