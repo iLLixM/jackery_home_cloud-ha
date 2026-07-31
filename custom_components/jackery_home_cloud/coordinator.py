@@ -28,7 +28,7 @@ from .const import (
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
-    MQTT_EMS_PV_TOTAL_CHARGE_METER_ID,
+    MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_AC_OUTPUT_METER_ID,
     MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
     TREND_DATE_FORMAT,
@@ -665,17 +665,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
         )
-        total_pv_charge = extract_ems_meter_value(
+        pv_energy_total = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
-            meter_id=MQTT_EMS_PV_TOTAL_CHARGE_METER_ID,
+            meter_id=MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
         )
         if (
             battery_charged_total is None
             and battery_discharged_total is None
             and pv1_energy_total is None
             and pv2_energy_total is None
-            and total_pv_charge is None
+            and pv_energy_total is None
         ):
             return
 
@@ -779,28 +779,28 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     pv2_energy_total,
                 )
 
-        if total_pv_charge is not None:
-            previous_value = _coerce_float(existing.get("total_pv_charge"))
-            if previous_value is not None and total_pv_charge + _BATTERY_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
+        if pv_energy_total is not None:
+            previous_value = _coerce_float(existing.get("pv_energy_total"))
+            if previous_value is not None and pv_energy_total + _BATTERY_ALLOWED_DECREASE_TOLERANCE_KWH < previous_value:
                 _LOGGER.debug(
-                    "Ignoring decreasing MQTT total PV charge value for %s: incoming=%s previous=%s",
+                    "Ignoring decreasing MQTT PV energy total value for %s: incoming=%s previous=%s",
                     system_id,
-                    total_pv_charge,
+                    pv_energy_total,
                     previous_value,
                 )
             else:
                 updated.update(
                     {
-                        "total_pv_charge": total_pv_charge,
-                        "total_pv_charge_at": dt_util.utcnow(),
-                        "total_pv_charge_source": "mqtt",
+                        "pv_energy_total": pv_energy_total,
+                        "pv_energy_total_at": dt_util.utcnow(),
+                        "pv_energy_total_source": "mqtt",
                     }
                 )
                 _LOGGER.debug(
-                    "Accepted MQTT total PV charge for %s from meter %s: %s kWh",
+                    "Accepted MQTT PV energy total for %s from meter %s: %s kWh",
                     system_id,
-                    MQTT_EMS_PV_TOTAL_CHARGE_METER_ID,
-                    total_pv_charge,
+                    MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
+                    pv_energy_total,
                 )
 
         self._mqtt_live_values[system_id] = updated
@@ -990,16 +990,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "age_seconds": pv2_total_age_seconds,
                 }
 
-        total_pv_charge_timestamp = live.get("total_pv_charge_at")
-        total_pv_charge_value = _coerce_float(live.get("total_pv_charge"))
-        if total_pv_charge_value is not None and total_pv_charge_timestamp is not None:
-            total_pv_charge_age_seconds = (now - total_pv_charge_timestamp).total_seconds()
-            if total_pv_charge_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
-                merged["total_pv_charge"] = total_pv_charge_value
-                mqtt_live["total_pv_charge"] = {
-                    "value": total_pv_charge_value,
+        pv_energy_total_timestamp = live.get("pv_energy_total_at")
+        pv_energy_total_value = _coerce_float(live.get("pv_energy_total"))
+        if pv_energy_total_value is not None and pv_energy_total_timestamp is not None:
+            pv_energy_total_age_seconds = (now - pv_energy_total_timestamp).total_seconds()
+            if pv_energy_total_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["pv_energy_total"] = pv_energy_total_value
+                mqtt_live["pv_energy_total"] = {
+                    "value": pv_energy_total_value,
                     "source": "mqtt",
-                    "age_seconds": total_pv_charge_age_seconds,
+                    "age_seconds": pv_energy_total_age_seconds,
                 }
 
         if daily_energy:

@@ -30,7 +30,7 @@ MQTT_RESTORE_SENSOR_KEYS: set[str] = {
     "battery_energy_discharged_total",
     "pv1_energy_total",
     "pv2_energy_total",
-    "total_pv_charge",
+    "pv_energy_total",
 }
 
 
@@ -286,14 +286,14 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
-        key="total_pv_charge",
-        name="Total PV charge",
+        key="pv_energy_total",
+        name="PV energy total",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=3,
         requires_mqtt=True,
-        value_fn=lambda bundle: _coerce_float(bundle.get("total_pv_charge")),
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv_energy_total")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
