@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import time as dt_time
 from typing import Any
+
+import voluptuous as vol
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,12 +18,21 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import CONF_ENABLE_MQTT, DOMAIN, MANUFACTURER, MODEL_NAME_MAP
+from .const import (
+    CONF_ENABLE_MQTT,
+    DOMAIN,
+    MANUFACTURER,
+    MODEL_NAME_MAP,
+    MQTT_EMS_CHARGE_WINDOW_METER_IDS,
+    MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
+)
 from .coordinator import JackeryHomeCloudCoordinator
 
 PARALLEL_UPDATES = 0
@@ -75,10 +87,9 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value (EMS meter 16930817, sign flipped)
-        # when fresh, falling back to REST. Confirmed mapping: cross-validated
-        # by energy balance (ac_main_power + this = other_load_power exactly)
-        # on 2026-08-01.
+        # Prefers the MQTT-sourced value (sign flipped, see
+        # MQTT_EMS_GRID_POWER_METER_ID in const.py) when fresh, falling back
+        # to REST.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "grid_power_mqtt",
@@ -95,12 +106,9 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value (PCS meter MQTT_PCS_AC_MAIN_POWER_METER_ID)
-        # when fresh, falling back to REST. The raw meter is unsigned; it is
-        # signed in coordinator.py's _apply_mqtt_live_values_to_bundle using
-        # -sign(battery_power_mqtt), since REST ac_main_power's sign was
-        # confirmed to always be the opposite of battery_power_mqtt's
-        # (positive while discharging, negative while charging).
+        # Prefers the MQTT-sourced value when fresh, falling back to REST.
+        # See MQTT_PCS_AC_MAIN_POWER_METER_ID in const.py for the raw
+        # meter's sign convention.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "ac_main_power_mqtt",
@@ -114,9 +122,9 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value (EMS meter 21548033, raw / 10) when
-        # fresh, falling back to REST. Confirmed mapping (matched REST exactly
-        # at two different SOC values on 2026-08-01).
+        # Prefers the MQTT-sourced value (raw / 10, see
+        # MQTT_EMS_BATTERY_SOC_METER_ID in const.py) when fresh, falling
+        # back to REST.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "battery_soc_mqtt",
@@ -135,11 +143,9 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         requires_mqtt=True,
-        # No REST equivalent exists for this at all. Confirmed mapping (bms1
-        # meter 33659905), sign convention validated on 2026-08-01: negative
-        # while discharging (-280 to -314 W, matched an app-reported ~250-300
-        # W discharge), positive while charging (+1416 to +1420 W, matched
-        # an app-derived ~1500 W charge rate = grid power - household load).
+        # No REST equivalent exists for this at all. See
+        # MQTT_BMS1_BATTERY_POWER_METER_ID in const.py for the sign
+        # convention.
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_mqtt")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
@@ -164,10 +170,9 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value (PCS meters 50490369 + 50490370
-        # summed) when fresh, falling back to REST. Only cross-validated at
-        # 0 W (nighttime) so far against REST pv_power - pending a daytime
-        # check.
+        # Prefers the MQTT-sourced value (PV1 + PV2 meters summed, see
+        # MQTT_PCS_PV1_POWER_METER_ID / MQTT_PCS_PV2_POWER_METER_ID in
+        # const.py) when fresh, falling back to REST.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "pv_power_mqtt",
@@ -184,11 +189,9 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value (EMS meter 16933889) when fresh,
-        # falling back to REST. Confirmed mapping: matched REST exactly in
-        # both states of a real on/off toggle test on 2026-08-01 (0.0 W AC
-        # output off, 28.0 W with a small load plugged in). This is power
-        # through the unit's own physical AC output sockets.
+        # Prefers the MQTT-sourced value (see
+        # MQTT_EMS_EPS_LOAD_POWER_METER_ID in const.py) when fresh, falling
+        # back to REST.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "eps_load_power_mqtt",
@@ -205,12 +208,11 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value (EMS meter 16936961) when fresh,
-        # falling back to REST. Confirmed mapping: matched REST exactly
-        # (609 W, then -735 W in a second, different scenario) on
-        # 2026-08-01. This is the true household load meter - do not confuse
-        # with ac_main_power, a distinct field that only coincides with this
-        # one when grid_power is ~0.
+        # Prefers the MQTT-sourced value (see
+        # MQTT_EMS_OTHER_LOAD_POWER_METER_ID in const.py) when fresh,
+        # falling back to REST. This is the true household load meter - do
+        # not confuse with ac_main_power, which only coincides with this one
+        # when grid_power is ~0.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "other_load_power_mqtt",
@@ -455,6 +457,29 @@ async def async_setup_entry(
     async_add_new_entities()
     entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
 
+    if mqtt_enabled:
+        platform = entity_platform.async_get_current_platform()
+        window_schema = {
+            vol.Required("slot"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
+            vol.Required("start"): cv.time,
+            vol.Required("end"): cv.time,
+        }
+        clear_schema = {
+            vol.Required("slot"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
+        }
+        platform.async_register_entity_service(
+            "set_charge_window", window_schema, "async_set_charge_window"
+        )
+        platform.async_register_entity_service(
+            "set_discharge_window", window_schema, "async_set_discharge_window"
+        )
+        platform.async_register_entity_service(
+            "clear_charge_window", clear_schema, "async_clear_charge_window"
+        )
+        platform.async_register_entity_service(
+            "clear_discharge_window", clear_schema, "async_clear_discharge_window"
+        )
+
 
 def _build_entities(
     coordinator: JackeryHomeCloudCoordinator,
@@ -475,6 +500,8 @@ def _build_entities(
                     description=description,
                 )
             )
+        if mqtt_enabled:
+            entities.append(JackeryScheduleSensor(coordinator=coordinator, system_id=system_id))
 
     return entities
 
@@ -577,6 +604,113 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         if self.entity_description.key in MQTT_RESTORE_SENSOR_KEYS:
             return self._restored_native_value
         return None
+
+
+class JackeryScheduleSensor(JackeryBaseSensor):
+    """Sensor exposing the Jackery scheduled charge/discharge time windows.
+
+    Experimental: reverse engineered from observed traffic rather than
+    official documentation (see MQTT_EMS_CHARGE_WINDOW_METER_IDS /
+    MQTT_EMS_DISCHARGE_WINDOW_METER_IDS in const.py). The schedule only
+    takes effect while the battery mode select is set to "Scheduled
+    charge/discharge". The protocol supports up to 10
+    charge and 10 discharge windows; rather than pre-declaring up to 40 time
+    entities, individual windows are managed through this entity's
+    set_charge_window / set_discharge_window / clear_charge_window /
+    clear_discharge_window services (slot 0-9), with the full current
+    schedule exposed as attributes.
+    """
+
+    _attr_icon = "mdi:calendar-clock"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        *,
+        coordinator: JackeryHomeCloudCoordinator,
+        system_id: str,
+    ) -> None:
+        """Initialize the schedule sensor."""
+        super().__init__(coordinator, system_id)
+        self._attr_unique_id = f"system_{system_id}_charge_discharge_schedule"
+        self._attr_name = "Charge/discharge schedule"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return a short summary of how many windows are currently configured."""
+        bundle = self._system_bundle
+        if bundle is None:
+            return None
+        charge_windows = _schedule_windows(bundle, "charge_window_")
+        discharge_windows = _schedule_windows(bundle, "discharge_window_")
+        return f"{len(charge_windows)} charge, {len(discharge_windows)} discharge"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the full current schedule."""
+        bundle = self._system_bundle
+        if bundle is None:
+            return {}
+        return {
+            "charge_windows": _schedule_windows(bundle, "charge_window_"),
+            "discharge_windows": _schedule_windows(bundle, "discharge_window_"),
+        }
+
+    async def async_set_charge_window(self, slot: int, start: dt_time, end: dt_time) -> None:
+        """Set one of the scheduled charge windows (service handler)."""
+        await self._async_set_window("charge", MQTT_EMS_CHARGE_WINDOW_METER_IDS, slot, start, end)
+
+    async def async_set_discharge_window(self, slot: int, start: dt_time, end: dt_time) -> None:
+        """Set one of the scheduled discharge windows (service handler)."""
+        await self._async_set_window("discharge", MQTT_EMS_DISCHARGE_WINDOW_METER_IDS, slot, start, end)
+
+    async def async_clear_charge_window(self, slot: int) -> None:
+        """Clear one of the scheduled charge windows (service handler)."""
+        await self._async_clear_window("charge", MQTT_EMS_CHARGE_WINDOW_METER_IDS, slot)
+
+    async def async_clear_discharge_window(self, slot: int) -> None:
+        """Clear one of the scheduled discharge windows (service handler)."""
+        await self._async_clear_window("discharge", MQTT_EMS_DISCHARGE_WINDOW_METER_IDS, slot)
+
+    async def _async_set_window(
+        self,
+        kind: str,
+        meter_ids: tuple[str, ...],
+        slot: int,
+        start: dt_time,
+        end: dt_time,
+    ) -> None:
+        if not 0 <= slot <= 9:
+            raise HomeAssistantError(f"Jackery schedule slot must be 0-9, got {slot}.")
+        raw_value = f"{start:%H%M}{end:%H%M}"
+        await self.coordinator.async_set_meter_value(
+            system_id=self._system_id,
+            meter_id=meter_ids[slot],
+            raw_value=raw_value,
+            bundle_key=f"{kind}_window_{slot}",
+            expected_bundle_value=raw_value,
+        )
+
+    async def _async_clear_window(self, kind: str, meter_ids: tuple[str, ...], slot: int) -> None:
+        if not 0 <= slot <= 9:
+            raise HomeAssistantError(f"Jackery schedule slot must be 0-9, got {slot}.")
+        await self.coordinator.async_set_meter_value(
+            system_id=self._system_id,
+            meter_id=meter_ids[slot],
+            raw_value="0",
+            bundle_key=f"{kind}_window_{slot}",
+            expected_bundle_value="0",
+        )
+
+
+def _schedule_windows(bundle: Mapping[str, Any], key_prefix: str) -> list[str]:
+    """Return formatted HH:MM-HH:MM strings for populated schedule slots."""
+    windows: list[str] = []
+    for index in range(10):
+        raw = bundle.get(f"{key_prefix}{index}")
+        if isinstance(raw, str) and raw != "0" and len(raw) == 8:
+            windows.append(f"{raw[0:2]}:{raw[2:4]}-{raw[4:6]}:{raw[6:8]}")
+    return windows
 
 
 def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:

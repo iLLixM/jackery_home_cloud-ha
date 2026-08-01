@@ -34,9 +34,12 @@ from .const import (
     MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
     MQTT_BMS1_BATTERY_POWER_METER_ID,
     MQTT_EMS_AC_OUTPUT_METER_ID,
+    MQTT_EMS_AUTO_STANDBY_METER_ID,
     MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
     MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+    MQTT_EMS_CHARGE_WINDOW_METER_IDS,
     MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+    MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
     MQTT_EMS_EPS_LOAD_POWER_METER_ID,
     MQTT_EMS_GRID_POWER_METER_ID,
     MQTT_EMS_MODE_METER_ID,
@@ -498,6 +501,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
             MQTT_EMS_STANDBY_METER_ID,
             MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+            MQTT_EMS_AUTO_STANDBY_METER_ID,
+            *MQTT_EMS_CHARGE_WINDOW_METER_IDS,
+            *MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
         )
         pcs_meter_ids = (
             MQTT_PCS_PV1_POWER_METER_ID,
@@ -902,6 +908,21 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
         )
+        auto_standby_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_AUTO_STANDBY_METER_ID,
+        )
+        charge_window_updates: dict[str, str] = {}
+        for index, meter_id in enumerate(MQTT_EMS_CHARGE_WINDOW_METER_IDS):
+            raw = extract_ems_meter_value(payload, device_serial=gw_sn, meter_id=meter_id)
+            if raw is not None:
+                charge_window_updates[f"charge_window_{index}"] = "0" if raw <= 0 else f"{int(raw):08d}"
+        discharge_window_updates: dict[str, str] = {}
+        for index, meter_id in enumerate(MQTT_EMS_DISCHARGE_WINDOW_METER_IDS):
+            raw = extract_ems_meter_value(payload, device_serial=gw_sn, meter_id=meter_id)
+            if raw is not None:
+                discharge_window_updates[f"discharge_window_{index}"] = "0" if raw <= 0 else f"{int(raw):08d}"
         if (
             battery_charged_total is None
             and battery_discharged_total is None
@@ -922,6 +943,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and charge_power_limit is None
             and standby_raw is None
             and output_power_limit_raw is None
+            and auto_standby_raw is None
+            and not charge_window_updates
+            and not discharge_window_updates
         ):
             return
 
@@ -1117,7 +1141,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT AC main power magnitude (confirmed vs |REST ac_main_power|) for %s from meter %s: %s W",
+                "Accepted MQTT AC main power magnitude for %s from meter %s: %s W",
                 system_id,
                 MQTT_PCS_AC_MAIN_POWER_METER_ID,
                 ac_main_power_magnitude,
@@ -1145,7 +1169,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT household load power (confirmed vs REST other_load_power) for %s from meter %s: %s W",
+                "Accepted MQTT household load power for %s from meter %s: %s W",
                 system_id,
                 MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
                 other_load_power,
@@ -1160,7 +1184,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT grid power (confirmed vs REST grid_power) for %s from meter %s: raw=%s -> %s W",
+                "Accepted MQTT grid power for %s from meter %s: raw=%s -> %s W",
                 system_id,
                 MQTT_EMS_GRID_POWER_METER_ID,
                 grid_power_raw,
@@ -1175,7 +1199,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT EPS load power (confirmed vs REST eps_load_power) for %s from meter %s: %s W",
+                "Accepted MQTT EPS load power for %s from meter %s: %s W",
                 system_id,
                 MQTT_EMS_EPS_LOAD_POWER_METER_ID,
                 eps_load_power,
@@ -1253,6 +1277,30 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 system_id,
                 MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
                 output_power_limit_raw,
+            )
+
+        if auto_standby_raw is not None:
+            updated.update(
+                {
+                    "auto_standby_raw": str(int(auto_standby_raw)),
+                    "auto_standby_raw_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT auto standby state for %s from meter %s: raw=%s",
+                system_id,
+                MQTT_EMS_AUTO_STANDBY_METER_ID,
+                auto_standby_raw,
+            )
+
+        if charge_window_updates or discharge_window_updates:
+            updated.update(charge_window_updates)
+            updated.update(discharge_window_updates)
+            _LOGGER.debug(
+                "Accepted MQTT schedule windows for %s: charge=%s discharge=%s",
+                system_id,
+                charge_window_updates,
+                discharge_window_updates,
             )
 
         self._mqtt_live_values[system_id] = updated
@@ -1504,10 +1552,27 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             merged["standby_raw"] = standby_raw
             mqtt_live["standby_raw"] = {"value": standby_raw, "source": "mqtt"}
 
+        auto_standby_raw = live.get("auto_standby_raw")
+        if isinstance(auto_standby_raw, str):
+            merged["auto_standby_raw"] = auto_standby_raw
+            mqtt_live["auto_standby_raw"] = {"value": auto_standby_raw, "source": "mqtt"}
+
         output_power_limit_raw = live.get("output_power_limit_raw")
         if isinstance(output_power_limit_raw, str):
             merged["output_power_limit_raw"] = output_power_limit_raw
             mqtt_live["output_power_limit_raw"] = {"value": output_power_limit_raw, "source": "mqtt"}
+
+        for index in range(len(MQTT_EMS_CHARGE_WINDOW_METER_IDS)):
+            key = f"charge_window_{index}"
+            value = live.get(key)
+            if isinstance(value, str):
+                merged[key] = value
+
+        for index in range(len(MQTT_EMS_DISCHARGE_WINDOW_METER_IDS)):
+            key = f"discharge_window_{index}"
+            value = live.get(key)
+            if isinstance(value, str):
+                merged[key] = value
 
         # Settings/limits persist indefinitely once received, like
         # battery_mode_raw/standby_raw above - no staleness gate, since they
@@ -1534,19 +1599,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 merged[key] = value
                 mqtt_live[key] = {"value": value, "source": "mqtt"}
 
-        # ac_main_power_mqtt (MQTT_PCS_AC_MAIN_POWER_METER_ID) is an unsigned
-        # magnitude at the raw-meter level - the device itself does not report a
-        # sign for this quantity. REST ac_main_power, by contrast, is signed
-        # (positive while the battery discharges to supply AC power, negative
-        # while it charges), and that sign is always the *opposite* of
-        # battery_power_mqtt's sign (MQTT_BMS1_BATTERY_POWER_METER_ID: negative
-        # while discharging, positive while charging) - confirmed across several
-        # live cross-checks on 2026-08-01, e.g. REST ac_main_power read -854 W
-        # while battery_power_mqtt was positive (charging) and +654 W a few
-        # minutes later while battery_power_mqtt was negative (discharging). So
-        # sign the magnitude here using -sign(battery_power_mqtt) instead of
-        # exposing an unsigned value; falls back to unsigned if battery_power_mqtt
-        # isn't available/fresh (sign unknown) or is exactly 0 (sign undefined).
+        # ac_main_power_mqtt's raw meter is unsigned (see
+        # MQTT_PCS_AC_MAIN_POWER_METER_ID in const.py); sign it here using
+        # -sign(battery_power_mqtt). Falls back to unsigned if
+        # battery_power_mqtt isn't available/fresh (sign unknown) or is
+        # exactly 0 (sign undefined).
         ac_main_timestamp = live.get("ac_main_power_mqtt_at")
         ac_main_magnitude = _coerce_float(live.get("ac_main_power_mqtt"))
         if (

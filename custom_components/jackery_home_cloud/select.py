@@ -26,24 +26,19 @@ from .const import (
 )
 from .coordinator import JackeryHomeCloudCoordinator
 
-# Candidate mapping for meter 23132161 (EMS priority/mode register), reverse
-# engineered from live MQTT captures of app-driven mode changes across two
-# sessions. "Battery priority" and "Self consumption" were each confirmed 3x;
-# "Smart / dynamic pricing" was confirmed once. "Scheduled charge/discharge"
-# (the app's "Duree d'utilisation" mode) does not touch this meter at all -
-# it writes a separate, not-yet-mapped time-window table - so it is
-# intentionally not offered here.
+# Value mapping for MQTT_EMS_MODE_METER_ID (see const.py). "Scheduled
+# charge/discharge" corresponds to the app's "Duration of use" mode.
 MODE_OPTIONS: dict[str, str] = {
     "Self consumption": "2",
     "Battery priority": "3",
     "Smart / dynamic pricing": "7",
+    "Scheduled charge/discharge": "5",
 }
 _MODE_VALUE_TO_OPTION: dict[str, str] = {value: label for label, value in MODE_OPTIONS.items()}
 
-# Preset mapping for meter 23324673 (EMS max output/discharge power), reverse
-# engineered from live MQTT captures on 2026-08-01: the app sent "0" when set
-# to "800 W" and "1" when set to "1500 W". Only these two presets have been
-# observed - there may be more (e.g. a 3rd tier) not yet captured.
+# Preset mapping for MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID (see const.py).
+# Only these two presets have been observed - there may be more (e.g. a 3rd
+# tier) not yet captured.
 OUTPUT_POWER_LIMIT_OPTIONS: dict[str, str] = {
     "800 W": "0",
     "1500 W": "1",
