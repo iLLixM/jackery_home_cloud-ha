@@ -75,8 +75,14 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda bundle: _coerce_float(
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "gridVO", "gridPower")
+        # Prefers the MQTT-sourced value (EMS meter 16930817, sign flipped)
+        # when fresh, falling back to REST. Confirmed mapping: cross-validated
+        # by energy balance (ac_main_power + this = other_load_power exactly)
+        # on 2026-08-01.
+        value_fn=lambda bundle: _mqtt_or_rest(
+            bundle,
+            "grid_power_mqtt",
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "gridVO", "gridPower"),
         ),
         unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
             system_id,
@@ -89,8 +95,16 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda bundle: _coerce_float(
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "acMainVO", "acMainPower")
+        # Prefers the MQTT-sourced value (PCS meter MQTT_PCS_AC_MAIN_POWER_METER_ID)
+        # when fresh, falling back to REST. The raw meter is unsigned; it is
+        # signed in coordinator.py's _apply_mqtt_live_values_to_bundle using
+        # -sign(battery_power_mqtt), since REST ac_main_power's sign was
+        # confirmed to always be the opposite of battery_power_mqtt's
+        # (positive while discharging, negative while charging).
+        value_fn=lambda bundle: _mqtt_or_rest(
+            bundle,
+            "ac_main_power_mqtt",
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "acMainVO", "acMainPower"),
         ),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
@@ -100,13 +114,34 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda bundle: _coerce_float(
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "soc")
+        # Prefers the MQTT-sourced value (EMS meter 21548033, raw / 10) when
+        # fresh, falling back to REST. Confirmed mapping (matched REST exactly
+        # at two different SOC values on 2026-08-01).
+        value_fn=lambda bundle: _mqtt_or_rest(
+            bundle,
+            "battery_soc_mqtt",
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "soc"),
         ),
         unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
             system_id,
             _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "deviceNo"),
         ),
+    ),
+    JackeryMetricDescription(
+        key="battery_power_mqtt",
+        name="Battery power (MQTT)",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        requires_mqtt=True,
+        # No REST equivalent exists for this at all. Confirmed mapping (bms1
+        # meter 33659905), sign convention validated on 2026-08-01: negative
+        # while discharging (-280 to -314 W, matched an app-reported ~250-300
+        # W discharge), positive while charging (+1416 to +1420 W, matched
+        # an app-derived ~1500 W charge rate = grid power - household load).
+        value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_energy_remaining",
@@ -129,8 +164,14 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda bundle: _coerce_float(
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "pvInfo", "pvPower")
+        # Prefers the MQTT-sourced value (PCS meters 50490369 + 50490370
+        # summed) when fresh, falling back to REST. Only cross-validated at
+        # 0 W (nighttime) so far against REST pv_power - pending a daytime
+        # check.
+        value_fn=lambda bundle: _mqtt_or_rest(
+            bundle,
+            "pv_power_mqtt",
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "pvInfo", "pvPower"),
         ),
         unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
             system_id,
@@ -143,8 +184,15 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda bundle: _coerce_float(
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "epsLoadPower")
+        # Prefers the MQTT-sourced value (EMS meter 16933889) when fresh,
+        # falling back to REST. Confirmed mapping: matched REST exactly in
+        # both states of a real on/off toggle test on 2026-08-01 (0.0 W AC
+        # output off, 28.0 W with a small load plugged in). This is power
+        # through the unit's own physical AC output sockets.
+        value_fn=lambda bundle: _mqtt_or_rest(
+            bundle,
+            "eps_load_power_mqtt",
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "epsLoadPower"),
         ),
         unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
             system_id,
@@ -157,14 +205,22 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda bundle: _coerce_float(
+        # Prefers the MQTT-sourced value (EMS meter 16936961) when fresh,
+        # falling back to REST. Confirmed mapping: matched REST exactly
+        # (609 W, then -735 W in a second, different scenario) on
+        # 2026-08-01. This is the true household load meter - do not confuse
+        # with ac_main_power, a distinct field that only coincides with this
+        # one when grid_power is ~0.
+        value_fn=lambda bundle: _mqtt_or_rest(
+            bundle,
+            "other_load_power_mqtt",
             _safe_get(
                 bundle,
                 "monitor",
                 "energyFlowChartVO",
                 "otherLoadVO",
                 "otherLoadPower",
-            )
+            ),
         ),
         unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
             system_id,
@@ -597,6 +653,20 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _mqtt_or_rest(bundle: Mapping[str, Any], mqtt_key: str, rest_value: Any) -> float | None:
+    """Prefer a fresh MQTT-sourced bundle value, falling back to the REST value.
+
+    The MQTT bundle key is only present when coordinator.py's
+    _apply_mqtt_live_values_to_bundle merged a recent-enough live value (see
+    MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS), so this naturally falls back to
+    REST whenever MQTT is disabled, disconnected, or the value went stale.
+    """
+    mqtt_value = _coerce_float(bundle.get(mqtt_key))
+    if mqtt_value is not None:
+        return mqtt_value
+    return _coerce_float(rest_value)
 
 
 def _coerce_int(value: Any) -> int | None:

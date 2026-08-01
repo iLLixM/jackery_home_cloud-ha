@@ -88,6 +88,7 @@ When enabled, the integration:
 - processes cyclic `data_report` messages
 - processes `data_get` and `data_set` responses
 - publishes device-control commands
+- actively polls all live MQTT meters (AC output state, battery charged/discharged total, PV1/PV2/PV total) via a `data_get` request sent on every MQTT reconnect and on a recurring interval thereafter (configurable, 15-600 seconds, default 60), since the device does not proactively broadcast all of these values on its own
 
 The integration supports an option to ignore invalid or expired MQTT TLS certificates. This is currently necessary because Jackery uses its own CA (not public trusted) for its certificates.
 
@@ -173,6 +174,7 @@ The initial config flow asks for:
 - whether MQTT should be enabled
 - whether invalid or expired MQTT TLS certificates should be ignored
 - whether raw MQTT debug logging should be enabled
+- the MQTT live meter poll interval (15-600 seconds, default 60)
 
 The required `phone_uid` is generated automatically.
 

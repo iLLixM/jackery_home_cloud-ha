@@ -55,16 +55,20 @@ def extract_ems_meter_value(
     *,
     device_serial: str,
     meter_id: str,
+    dev_sn_prefix: str = "ems",
 ) -> float | None:
-    """Extract a single EMS meter value from a MQTT data_report payload.
+    """Extract a single meter value from a MQTT meter payload.
 
-    The helper only evaluates MQTT payloads with cmd=data_report and the EMS
-    device node matching ``ems_<device_serial>``.
+    The helper evaluates MQTT payloads with cmd=data_report (unsolicited
+    device pushes) as well as cmd=data_get/data_set (solicited responses,
+    which the device echoes back with the requested cmd instead of
+    data_report) for the device node matching ``<dev_sn_prefix>_<device_serial>``
+    (e.g. ``ems_...`` for EMS meters, ``pcs_...`` for PCS/panel meters).
     """
     if not isinstance(payload, Mapping):
         return None
 
-    if str(payload.get("cmd") or "") != "data_report":
+    if str(payload.get("cmd") or "") not in ("data_report", "data_get", "data_set"):
         return None
 
     info = payload.get("info")
@@ -75,7 +79,7 @@ def extract_ems_meter_value(
     if not isinstance(dev_list, list):
         return None
 
-    expected_dev_sn = f"ems_{str(device_serial).strip()}"
+    expected_dev_sn = f"{dev_sn_prefix}_{str(device_serial).strip()}"
     normalized_meter_id = str(meter_id)
 
     for dev in dev_list:

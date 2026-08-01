@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_interval
 
 from .api.auth import build_phone_uid
 from .api.client import JackeryApiClient
@@ -16,10 +18,12 @@ from .const import (
     CONF_CRYPTO_KEY,
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
+    CONF_MQTT_POLL_INTERVAL,
     CONF_MQTT_TLS_INSECURE,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
     DEFAULT_BASE_URL,
+    DEFAULT_MQTT_POLL_INTERVAL_SECONDS,
     DOMAIN,
     PLATFORMS,
 )
@@ -30,7 +34,7 @@ from .mqtt_client import JackeryMqttClient
 _LOGGER = logging.getLogger(__name__)
 
 _CONFIG_ENTRY_VERSION = 1
-_CONFIG_ENTRY_MINOR_VERSION = 3
+_CONFIG_ENTRY_MINOR_VERSION = 4
 
 
 @dataclass(slots=True)
@@ -121,6 +125,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             await mqtt_client.async_start()
             runtime.mqtt_client = mqtt_client
+
+            poll_interval_seconds = int(
+                entry.options.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
+            )
+
+            async def _async_poll_live_meters(_now) -> None:
+                await coordinator.async_request_live_meter_values()
+
+            entry.async_on_unload(
+                async_track_time_interval(
+                    hass,
+                    _async_poll_live_meters,
+                    timedelta(seconds=poll_interval_seconds),
+                )
+            )
         except JackeryHomeCryptoError as err:
             _LOGGER.warning(
                 "Failed to start Jackery MQTT foundation for %s because a legacy encoded credential still requires a valid integration crypto key: %s",
@@ -201,6 +220,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         changed = True
     if CONF_MQTT_DEBUG_RAW not in options:
         options[CONF_MQTT_DEBUG_RAW] = False
+        changed = True
+    if CONF_MQTT_POLL_INTERVAL not in options:
+        options[CONF_MQTT_POLL_INTERVAL] = DEFAULT_MQTT_POLL_INTERVAL_SECONDS
         changed = True
 
     if entry.minor_version < _CONFIG_ENTRY_MINOR_VERSION:

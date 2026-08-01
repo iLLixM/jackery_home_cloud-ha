@@ -1,4 +1,4 @@
-"""Switch platform for Jackery Home Cloud MQTT-backed controls."""
+"""Select platform for Jackery Home Cloud MQTT-backed controls."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 import time
 from typing import Any
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
@@ -21,12 +21,36 @@ from .const import (
     MANUFACTURER,
     MODEL_NAME_MAP,
     MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE,
-    MQTT_EMS_AC_OUTPUT_METER_ID,
-    MQTT_EMS_STANDBY_METER_ID,
-    MQTT_EMS_STANDBY_RAW_OFF,
-    MQTT_EMS_STANDBY_RAW_ON,
+    MQTT_EMS_MODE_METER_ID,
+    MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
 )
 from .coordinator import JackeryHomeCloudCoordinator
+
+# Candidate mapping for meter 23132161 (EMS priority/mode register), reverse
+# engineered from live MQTT captures of app-driven mode changes across two
+# sessions. "Battery priority" and "Self consumption" were each confirmed 3x;
+# "Smart / dynamic pricing" was confirmed once. "Scheduled charge/discharge"
+# (the app's "Duree d'utilisation" mode) does not touch this meter at all -
+# it writes a separate, not-yet-mapped time-window table - so it is
+# intentionally not offered here.
+MODE_OPTIONS: dict[str, str] = {
+    "Self consumption": "2",
+    "Battery priority": "3",
+    "Smart / dynamic pricing": "7",
+}
+_MODE_VALUE_TO_OPTION: dict[str, str] = {value: label for label, value in MODE_OPTIONS.items()}
+
+# Preset mapping for meter 23324673 (EMS max output/discharge power), reverse
+# engineered from live MQTT captures on 2026-08-01: the app sent "0" when set
+# to "800 W" and "1" when set to "1500 W". Only these two presets have been
+# observed - there may be more (e.g. a 3rd tier) not yet captured.
+OUTPUT_POWER_LIMIT_OPTIONS: dict[str, str] = {
+    "800 W": "0",
+    "1500 W": "1",
+}
+_OUTPUT_POWER_LIMIT_VALUE_TO_OPTION: dict[str, str] = {
+    value: label for label, value in OUTPUT_POWER_LIMIT_OPTIONS.items()
+}
 
 
 async def async_setup_entry(
@@ -34,7 +58,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Jackery MQTT-backed switches for a config entry."""
+    """Set up the Jackery MQTT-backed battery mode select for a config entry."""
     if not entry.options.get(CONF_ENABLE_MQTT):
         return
 
@@ -44,7 +68,7 @@ async def async_setup_entry(
 
     coordinator = runtime.coordinator
     systems = coordinator.data.get("systems", {}) if coordinator.data else {}
-    entities: list[JackeryAcOutputSwitch | JackeryStandbySwitch] = []
+    entities: list[JackeryBatteryModeSelect | JackeryOutputPowerLimitSelect] = []
 
     for system_id, bundle in systems.items():
         if not isinstance(bundle, Mapping):
@@ -53,7 +77,7 @@ async def async_setup_entry(
         if not device_sn:
             continue
         entities.append(
-            JackeryAcOutputSwitch(
+            JackeryBatteryModeSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
@@ -62,7 +86,7 @@ async def async_setup_entry(
             )
         )
         entities.append(
-            JackeryStandbySwitch(
+            JackeryOutputPowerLimitSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
@@ -75,146 +99,19 @@ async def async_setup_entry(
         async_add_entities(entities)
 
 
-class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], SwitchEntity):
-    """MQTT-backed switch for the Jackery AC output state."""
-
-    _attr_has_entity_name = True
-    _attr_name = "AC Output"
-    _attr_icon = "mdi:power-plug"
-    _attr_entity_category = EntityCategory.CONFIG
-
-    def __init__(
-        self,
-        *,
-        coordinator: JackeryHomeCloudCoordinator,
-        system_id: str,
-        bundle: Mapping[str, Any],
-        mqtt_client: Any,
-        device_sn: str,
-    ) -> None:
-        """Initialize the AC output switch."""
-        super().__init__(coordinator)
-        self._system_id = system_id
-        self._bundle = dict(bundle)
-        self._mqtt_client = mqtt_client
-        self._device_sn = str(device_sn).strip()
-        self._attr_unique_id = f"system_{system_id}_ac_output"
-        self._attr_device_info = _system_device_info(system_id, bundle)
-
-    async def async_added_to_hass(self) -> None:
-        """Request the initial AC output state once the switch is added."""
-        await super().async_added_to_hass()
-        await self._async_request_state()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated coordinator data."""
-        self._bundle = dict(self._system_bundle or {})
-        super()._handle_coordinator_update()
-
-    @property
-    def available(self) -> bool:
-        """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
-
-    @property
-    def is_on(self) -> bool | None:
-        """Return the last known AC output state."""
-        bundle = self._system_bundle or self._bundle or {}
-        value = bundle.get("ac_output_state")
-        if isinstance(value, bool):
-            return value
-        return None
-
-    @property
-    def icon(self) -> str:
-        """Return a state-aware icon for the AC output switch."""
-        if self.is_on is True:
-            return "mdi:power-plug"
-        if self.is_on is False:
-            return "mdi:power-plug-off-outline"
-        return "mdi:power-plug"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return diagnostic attributes for the last known AC output state."""
-        bundle = self._system_bundle or self._bundle or {}
-        mqtt_live = bundle.get("mqtt_live") if isinstance(bundle, dict) else None
-        ac_meta = mqtt_live.get("ac_output_state") if isinstance(mqtt_live, dict) else None
-        attrs: dict[str, Any] = {}
-        if isinstance(ac_meta, dict):
-            if "source" in ac_meta:
-                attrs["state_source"] = ac_meta.get("source")
-            if "age_seconds" in ac_meta:
-                attrs["state_age_seconds"] = ac_meta.get("age_seconds")
-        return attrs
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn on AC output via MQTT."""
-        await self._async_send_set(True)
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off AC output via MQTT."""
-        await self._async_send_set(False)
-
-    @property
-    def _system_bundle(self) -> dict[str, Any] | None:
-        systems = self.coordinator.data.get("systems", {}) if self.coordinator.data else {}
-        bundle = systems.get(self._system_id)
-        return bundle if isinstance(bundle, dict) else None
-
-    async def _async_request_state(self) -> None:
-        """Actively request the current AC output state via data_get."""
-        if not self._device_sn:
-            return
-        topic = MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=self._device_sn)
-        timestamp_ms = str(int(time.time() * 1000))
-        payload = {
-            "cmd": "data_get",
-            "gw_sn": self._device_sn,
-            "timestamp": timestamp_ms,
-            "info": {
-                "dev_list": [
-                    {
-                        "dev_sn": f"ems_{self._device_sn}",
-                        "meter_list": [MQTT_EMS_AC_OUTPUT_METER_ID],
-                    }
-                ]
-            },
-        }
-        try:
-            await self._mqtt_client.async_publish_json(topic, payload, qos=1)
-        except Exception as err:
-            if "not connected" in str(err).lower():
-                return
-            raise HomeAssistantError(f"Failed to request Jackery AC output state: {err}") from err
-
-    async def _async_send_set(self, is_on: bool) -> None:
-        """Publish the desired AC output state via MQTT and verify it was applied."""
-        if not self._device_sn:
-            raise HomeAssistantError("No Jackery device serial is available for AC output control.")
-        await self.coordinator.async_set_meter_value(
-            system_id=self._system_id,
-            meter_id=MQTT_EMS_AC_OUTPUT_METER_ID,
-            raw_value="1" if is_on else "0",
-            bundle_key="ac_output_state",
-            expected_bundle_value=is_on,
-        )
-
-
-class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], SwitchEntity):
-    """MQTT-backed switch for the Jackery standby ("veille") state.
+class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], SelectEntity):
+    """MQTT-backed select for the Jackery battery priority mode.
 
     Experimental: the meter mapping was reverse engineered from observed
-    traffic rather than official documentation. Verify against the Jackery
-    app before relying on it for automation. A separate "auto standby"
-    setting exists in the app but has not been captured/mapped yet.
+    traffic rather than official documentation. Verify the selected mode
+    against the Jackery app before relying on it for automation.
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Standby"
-    _attr_icon = "mdi:sleep"
+    _attr_name = "Battery mode"
+    _attr_icon = "mdi:battery-sync"
     _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = list(MODE_OPTIONS.keys())
 
     def __init__(
         self,
@@ -225,17 +122,17 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
         mqtt_client: Any,
         device_sn: str,
     ) -> None:
-        """Initialize the standby switch."""
+        """Initialize the battery mode select."""
         super().__init__(coordinator)
         self._system_id = system_id
         self._bundle = dict(bundle)
         self._mqtt_client = mqtt_client
         self._device_sn = str(device_sn).strip()
-        self._attr_unique_id = f"system_{system_id}_standby"
+        self._attr_unique_id = f"system_{system_id}_battery_mode"
         self._attr_device_info = _system_device_info(system_id, bundle)
 
     async def async_added_to_hass(self) -> None:
-        """Request the initial standby state once the switch is added."""
+        """Request the initial mode once the select entity is added."""
         await super().async_added_to_hass()
         await self._async_request_state()
 
@@ -251,17 +148,13 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
         return bool(self._device_sn) and super().available
 
     @property
-    def is_on(self) -> bool | None:
-        """Return True if the device is currently in standby."""
+    def current_option(self) -> str | None:
+        """Return the last known battery mode."""
         bundle = self._system_bundle or self._bundle or {}
-        raw_value = bundle.get("standby_raw")
+        raw_value = bundle.get("battery_mode_raw")
         if not isinstance(raw_value, str):
             return None
-        if raw_value == MQTT_EMS_STANDBY_RAW_ON:
-            return True
-        if raw_value == MQTT_EMS_STANDBY_RAW_OFF:
-            return False
-        return None
+        return _MODE_VALUE_TO_OPTION.get(raw_value)
 
     @property
     def _system_bundle(self) -> dict[str, Any] | None:
@@ -269,16 +162,24 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
         bundle = systems.get(self._system_id)
         return bundle if isinstance(bundle, dict) else None
 
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Enter standby via MQTT."""
-        await self._async_send_set(MQTT_EMS_STANDBY_RAW_ON)
+    async def async_select_option(self, option: str) -> None:
+        """Publish the desired battery mode via MQTT and verify it was applied."""
+        value = MODE_OPTIONS.get(option)
+        if value is None:
+            raise HomeAssistantError(f"Unknown Jackery battery mode option: {option}")
+        if not self._device_sn:
+            raise HomeAssistantError("No Jackery device serial is available for battery mode control.")
 
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Exit standby via MQTT."""
-        await self._async_send_set(MQTT_EMS_STANDBY_RAW_OFF)
+        await self.coordinator.async_set_meter_value(
+            system_id=self._system_id,
+            meter_id=MQTT_EMS_MODE_METER_ID,
+            raw_value=value,
+            bundle_key="battery_mode_raw",
+            expected_bundle_value=value,
+        )
 
     async def _async_request_state(self) -> None:
-        """Actively request the current standby state via data_get."""
+        """Actively request the current battery mode via data_get."""
         if not self._device_sn:
             return
         topic = MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=self._device_sn)
@@ -291,7 +192,7 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
                 "dev_list": [
                     {
                         "dev_sn": f"ems_{self._device_sn}",
-                        "meter_list": [MQTT_EMS_STANDBY_METER_ID],
+                        "meter_list": [MQTT_EMS_MODE_METER_ID],
                     }
                 ]
             },
@@ -301,23 +202,118 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
         except Exception as err:
             if "not connected" in str(err).lower():
                 return
-            raise HomeAssistantError(f"Failed to request Jackery standby state: {err}") from err
+            raise HomeAssistantError(f"Failed to request Jackery battery mode: {err}") from err
 
-    async def _async_send_set(self, raw_value: str) -> None:
-        """Publish the desired standby state via MQTT and verify it was applied."""
+
+class JackeryOutputPowerLimitSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], SelectEntity):
+    """MQTT-backed select for the Jackery max output (discharge) power preset.
+
+    Experimental: the meter mapping was reverse engineered from observed
+    traffic rather than official documentation. Verify the selected value
+    against the Jackery app before relying on it for automation. Only 2
+    presets have been observed so far - there may be more.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Output power limit"
+    _attr_icon = "mdi:transmission-tower-export"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = list(OUTPUT_POWER_LIMIT_OPTIONS.keys())
+
+    def __init__(
+        self,
+        *,
+        coordinator: JackeryHomeCloudCoordinator,
+        system_id: str,
+        bundle: Mapping[str, Any],
+        mqtt_client: Any,
+        device_sn: str,
+    ) -> None:
+        """Initialize the output power limit select."""
+        super().__init__(coordinator)
+        self._system_id = system_id
+        self._bundle = dict(bundle)
+        self._mqtt_client = mqtt_client
+        self._device_sn = str(device_sn).strip()
+        self._attr_unique_id = f"system_{system_id}_output_power_limit"
+        self._attr_device_info = _system_device_info(system_id, bundle)
+
+    async def async_added_to_hass(self) -> None:
+        """Request the initial value once the select entity is added."""
+        await super().async_added_to_hass()
+        await self._async_request_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated coordinator data."""
+        self._bundle = dict(self._system_bundle or {})
+        super()._handle_coordinator_update()
+
+    @property
+    def available(self) -> bool:
+        """Return availability based on device serial and MQTT connectivity."""
+        return bool(self._device_sn) and super().available
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the last known output power limit preset."""
+        bundle = self._system_bundle or self._bundle or {}
+        raw_value = bundle.get("output_power_limit_raw")
+        if not isinstance(raw_value, str):
+            return None
+        return _OUTPUT_POWER_LIMIT_VALUE_TO_OPTION.get(raw_value)
+
+    @property
+    def _system_bundle(self) -> dict[str, Any] | None:
+        systems = self.coordinator.data.get("systems", {}) if self.coordinator.data else {}
+        bundle = systems.get(self._system_id)
+        return bundle if isinstance(bundle, dict) else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Publish the desired output power limit preset via MQTT and verify it was applied."""
+        value = OUTPUT_POWER_LIMIT_OPTIONS.get(option)
+        if value is None:
+            raise HomeAssistantError(f"Unknown Jackery output power limit option: {option}")
         if not self._device_sn:
-            raise HomeAssistantError("No Jackery device serial is available for standby control.")
+            raise HomeAssistantError("No Jackery device serial is available for output power limit control.")
+
         await self.coordinator.async_set_meter_value(
             system_id=self._system_id,
-            meter_id=MQTT_EMS_STANDBY_METER_ID,
-            raw_value=raw_value,
-            bundle_key="standby_raw",
-            expected_bundle_value=raw_value,
+            meter_id=MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+            raw_value=value,
+            bundle_key="output_power_limit_raw",
+            expected_bundle_value=value,
         )
+
+    async def _async_request_state(self) -> None:
+        """Actively request the current output power limit via data_get."""
+        if not self._device_sn:
+            return
+        topic = MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=self._device_sn)
+        timestamp_ms = str(int(time.time() * 1000))
+        payload = {
+            "cmd": "data_get",
+            "gw_sn": self._device_sn,
+            "timestamp": timestamp_ms,
+            "info": {
+                "dev_list": [
+                    {
+                        "dev_sn": f"ems_{self._device_sn}",
+                        "meter_list": [MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID],
+                    }
+                ]
+            },
+        }
+        try:
+            await self._mqtt_client.async_publish_json(topic, payload, qos=1)
+        except Exception as err:
+            if "not connected" in str(err).lower():
+                return
+            raise HomeAssistantError(f"Failed to request Jackery output power limit: {err}") from err
 
 
 def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:
-    """Build device info for the system-level switch."""
+    """Build device info for the system-level select entity."""
     system = bundle.get("system", {}) if isinstance(bundle, Mapping) else {}
     system_no = str(system.get("systemNo") or system_id)
     name = str(system.get("name") or system_no)

@@ -7,12 +7,13 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+import math
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -26,11 +27,27 @@ from .const import (
     DOMAIN,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
+    MQTT_EMS_BATTERY_SOC_METER_ID,
+    MQTT_EMS_BATTERY_SOC_SCALE,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
+    MQTT_BMS1_BATTERY_POWER_METER_ID,
     MQTT_EMS_AC_OUTPUT_METER_ID,
+    MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
+    MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+    MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+    MQTT_EMS_EPS_LOAD_POWER_METER_ID,
+    MQTT_EMS_GRID_POWER_METER_ID,
+    MQTT_EMS_MODE_METER_ID,
+    MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
+    MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+    MQTT_EMS_STANDBY_METER_ID,
+    MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS,
     MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
+    MQTT_PCS_AC_MAIN_POWER_METER_ID,
+    MQTT_PCS_PV1_POWER_METER_ID,
+    MQTT_PCS_PV2_POWER_METER_ID,
     TREND_DATE_FORMAT,
     UPDATE_INTERVAL_SECONDS,
 )
@@ -448,15 +465,48 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
         if now_connected and not was_connected:
-            await self.async_request_ac_output_states()
+            await self.async_request_live_meter_values()
         self._publish_runtime_update()
 
 
-    async def async_request_ac_output_states(self) -> None:
-        """Request AC output states for all selected systems via MQTT."""
+    async def async_request_live_meter_values(self) -> None:
+        """Request all live MQTT meter values for all selected systems.
+
+        Covers AC output state plus the cumulative energy meters (battery
+        charged/discharged total, PV1/PV2/PV total). The device does not
+        proactively broadcast these values on a fixed schedule, so callers
+        should invoke this both on reconnect and on a recurring timer.
+        """
         mqtt_client = getattr(getattr(self.config_entry, "runtime_data", None), "mqtt_client", None)
         if mqtt_client is None:
             return
+
+        ems_meter_ids = (
+            MQTT_EMS_AC_OUTPUT_METER_ID,
+            MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
+            MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
+            MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
+            MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
+            MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
+            MQTT_EMS_BATTERY_SOC_METER_ID,
+            MQTT_EMS_MODE_METER_ID,
+            MQTT_EMS_GRID_POWER_METER_ID,
+            MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
+            MQTT_EMS_EPS_LOAD_POWER_METER_ID,
+            MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
+            MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+            MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+            MQTT_EMS_STANDBY_METER_ID,
+            MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+        )
+        pcs_meter_ids = (
+            MQTT_PCS_PV1_POWER_METER_ID,
+            MQTT_PCS_PV2_POWER_METER_ID,
+            MQTT_PCS_AC_MAIN_POWER_METER_ID,
+        )
+        bms1_meter_ids = (
+            MQTT_BMS1_BATTERY_POWER_METER_ID,
+        )
 
         systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
         for system_id, bundle in systems.items():
@@ -476,24 +526,121 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "dev_list": [
                         {
                             "dev_sn": f"ems_{device_sn}",
-                            "meter_list": [MQTT_EMS_AC_OUTPUT_METER_ID],
-                        }
+                            "meter_list": list(ems_meter_ids),
+                        },
+                        {
+                            "dev_sn": f"pcs_{device_sn}",
+                            "meter_list": list(pcs_meter_ids),
+                        },
+                        {
+                            "dev_sn": f"bms1_{device_sn}",
+                            "meter_list": list(bms1_meter_ids),
+                        },
                     ]
                 },
             }
             try:
                 await mqtt_client.async_publish_json(topic, payload, qos=1)
                 _LOGGER.debug(
-                    "Requested Jackery AC output state for %s via MQTT topic %s",
+                    "Requested Jackery live meter values for %s via MQTT topic %s",
                     system_id,
                     topic,
                 )
             except Exception as err:
                 _LOGGER.debug(
-                    "Failed to request Jackery AC output state for %s: %s",
+                    "Failed to request Jackery live meter values for %s: %s",
                     system_id,
                     err,
                 )
+
+    async def async_set_meter_value(
+        self,
+        *,
+        system_id: str,
+        meter_id: str,
+        raw_value: str,
+        bundle_key: str,
+        expected_bundle_value: Any,
+        dev_sn_prefix: str = "ems",
+        max_attempts: int = 3,
+        verify_delay_seconds: float = 2.0,
+    ) -> None:
+        """Publish a data_set command and verify the device applied it, retrying on mismatch.
+
+        The Jackery MQTT broker only PUBACKs delivery to itself (qos=1), not
+        that the device actually accepted/applied the value, and a rejected
+        or lost command otherwise fails silently. This waits after each
+        publish for the device's response (which flows into the coordinator
+        bundle via the normal MQTT ingestion pipeline, same as any other
+        data_report/data_get/data_set message) and compares bundle_key
+        against expected_bundle_value, retrying the publish up to
+        max_attempts times on mismatch before giving up.
+        """
+        mqtt_client = getattr(getattr(self.config_entry, "runtime_data", None), "mqtt_client", None)
+        if mqtt_client is None:
+            raise HomeAssistantError("Jackery MQTT client is not available.")
+
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        bundle = systems.get(system_id)
+        if not isinstance(bundle, Mapping):
+            raise HomeAssistantError("No Jackery system data is available for this control.")
+        device_sn = self._extract_system_device_sn(bundle)
+        if not device_sn:
+            raise HomeAssistantError("No Jackery device serial is available for this control.")
+
+        topic = self._mqtt_command_topic(device_sn)
+        payload = {
+            "cmd": "data_set",
+            "gw_sn": device_sn,
+            "timestamp": _mqtt_timestamp_ms(),
+            "info": {
+                "dev_list": [
+                    {
+                        "dev_sn": f"{dev_sn_prefix}_{device_sn}",
+                        "meter_list": [[meter_id, raw_value]],
+                    }
+                ]
+            },
+        }
+
+        last_seen: Any = None
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await mqtt_client.async_publish_json(topic, payload, qos=1)
+            except Exception as err:
+                last_error = err
+                _LOGGER.debug(
+                    "Jackery data_set publish failed for meter %s (attempt %s/%s): %s",
+                    meter_id,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                await asyncio.sleep(verify_delay_seconds)
+                continue
+
+            await asyncio.sleep(verify_delay_seconds)
+            systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+            current_bundle = systems.get(system_id)
+            last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
+            if _mqtt_control_values_match(expected_bundle_value, last_seen):
+                _LOGGER.debug(
+                    "Jackery data_set confirmed for meter %s after %s attempt(s): %s",
+                    meter_id,
+                    attempt,
+                    last_seen,
+                )
+                return
+
+        if last_seen is None and last_error is not None:
+            raise HomeAssistantError(
+                f"Failed to publish Jackery command for meter {meter_id} after {max_attempts} attempts: {last_error}"
+            ) from last_error
+        raise HomeAssistantError(
+            f"Jackery did not confirm meter {meter_id} = {raw_value!r} after {max_attempts} attempts "
+            f"(last seen: {last_seen!r})"
+        )
 
     async def async_handle_mqtt_message(self, message: Mapping[str, Any]) -> None:
         payload_text = message.get("payload_text")
@@ -614,6 +761,15 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _publish_runtime_update(self) -> None:
+        """Push freshly merged MQTT values to entities without disturbing the REST poll schedule.
+
+        DataUpdateCoordinator.async_set_updated_data() cancels and reschedules the
+        next automatic refresh every time it is called. Since this method runs on
+        every incoming MQTT message (potentially every few seconds), calling
+        async_set_updated_data() here would perpetually defer _async_update_data(),
+        starving all REST-sourced sensors (grid power, battery SOC, PV power, ...).
+        Updating self.data directly and notifying listeners avoids that side effect.
+        """
         if not self.data:
             return
         new_data = dict(self.data)
@@ -623,14 +779,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             merged_bundle = {**bundle, "mqtt_state": dict(self._mqtt_state)}
             systems[system_id] = self._apply_mqtt_live_values_to_bundle(system_id, merged_bundle)
         new_data["systems"] = systems
-        self.async_set_updated_data(new_data)
+        self.data = new_data
+        self.last_update_success = True
+        self.async_update_listeners()
 
     def _ingest_mqtt_live_values(self, message: Mapping[str, Any]) -> None:
-        """Extract selected live values from MQTT data_report payloads."""
+        """Extract selected live values from MQTT data_report/data_get/data_set payloads."""
         payload = message.get("payload_json")
         if not isinstance(payload, Mapping):
             return
-        if str(payload.get("cmd") or "") != "data_report":
+        if str(payload.get("cmd") or "") not in ("data_report", "data_get", "data_set"):
             return
 
         gw_sn = str(payload.get("gw_sn") or "").strip()
@@ -670,12 +828,100 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
         )
+        battery_soc_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_BATTERY_SOC_METER_ID,
+        )
+        pv1_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_PV1_POWER_METER_ID,
+            dev_sn_prefix="pcs",
+        )
+        pv2_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_PV2_POWER_METER_ID,
+            dev_sn_prefix="pcs",
+        )
+        battery_mode_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_MODE_METER_ID,
+        )
+        ac_main_power_magnitude = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_AC_MAIN_POWER_METER_ID,
+            dev_sn_prefix="pcs",
+        )
+        battery_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_BMS1_BATTERY_POWER_METER_ID,
+            dev_sn_prefix="bms1",
+        )
+        other_load_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
+        )
+        grid_power_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_GRID_POWER_METER_ID,
+        )
+        eps_load_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_EPS_LOAD_POWER_METER_ID,
+        )
+        charge_floor_soc_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
+        )
+        discharge_ceiling_soc_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+        )
+        charge_power_limit = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+        )
+        standby_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_STANDBY_METER_ID,
+        )
+        output_power_limit_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+        )
         if (
             battery_charged_total is None
             and battery_discharged_total is None
             and pv1_energy_total is None
             and pv2_energy_total is None
             and pv_energy_total is None
+            and battery_soc_raw is None
+            and pv1_power is None
+            and pv2_power is None
+            and battery_mode_raw is None
+            and ac_main_power_magnitude is None
+            and battery_power is None
+            and other_load_power is None
+            and grid_power_raw is None
+            and eps_load_power is None
+            and charge_floor_soc_raw is None
+            and discharge_ceiling_soc_raw is None
+            and charge_power_limit is None
+            and standby_raw is None
+            and output_power_limit_raw is None
         ):
             return
 
@@ -802,6 +1048,212 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
                     pv_energy_total,
                 )
+
+        # The following are fluctuating instantaneous values (not cumulative
+        # totals), so no decrease-tolerance guard applies. Meter mappings are
+        # unverified candidates pending comparison against the Jackery app.
+        if battery_soc_raw is not None:
+            updated.update(
+                {
+                    "battery_soc_mqtt": battery_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                    "battery_soc_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT battery SOC (unverified mapping) for %s from meter %s: raw=%s -> %.1f%%",
+                system_id,
+                MQTT_EMS_BATTERY_SOC_METER_ID,
+                battery_soc_raw,
+                battery_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+            )
+
+        if pv1_power is not None:
+            updated.update(
+                {
+                    "pv1_power_mqtt": pv1_power,
+                    "pv1_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT PV1 power (unverified mapping) for %s from meter %s: %s W",
+                system_id,
+                MQTT_PCS_PV1_POWER_METER_ID,
+                pv1_power,
+            )
+
+        if pv2_power is not None:
+            updated.update(
+                {
+                    "pv2_power_mqtt": pv2_power,
+                    "pv2_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT PV2 power (unverified mapping) for %s from meter %s: %s W",
+                system_id,
+                MQTT_PCS_PV2_POWER_METER_ID,
+                pv2_power,
+            )
+
+        if battery_mode_raw is not None:
+            updated.update(
+                {
+                    "battery_mode_raw": str(int(battery_mode_raw)),
+                    "battery_mode_raw_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT battery mode for %s from meter %s: raw=%s",
+                system_id,
+                MQTT_EMS_MODE_METER_ID,
+                battery_mode_raw,
+            )
+
+        if ac_main_power_magnitude is not None:
+            updated.update(
+                {
+                    "ac_main_power_mqtt": ac_main_power_magnitude,
+                    "ac_main_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT AC main power magnitude (confirmed vs |REST ac_main_power|) for %s from meter %s: %s W",
+                system_id,
+                MQTT_PCS_AC_MAIN_POWER_METER_ID,
+                ac_main_power_magnitude,
+            )
+
+        if battery_power is not None:
+            updated.update(
+                {
+                    "battery_power_mqtt": battery_power,
+                    "battery_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT battery power for %s from meter %s: %s W",
+                system_id,
+                MQTT_BMS1_BATTERY_POWER_METER_ID,
+                battery_power,
+            )
+
+        if other_load_power is not None:
+            updated.update(
+                {
+                    "other_load_power_mqtt": other_load_power,
+                    "other_load_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT household load power (confirmed vs REST other_load_power) for %s from meter %s: %s W",
+                system_id,
+                MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
+                other_load_power,
+            )
+
+        if grid_power_raw is not None:
+            grid_power = -grid_power_raw
+            updated.update(
+                {
+                    "grid_power_mqtt": grid_power,
+                    "grid_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT grid power (confirmed vs REST grid_power) for %s from meter %s: raw=%s -> %s W",
+                system_id,
+                MQTT_EMS_GRID_POWER_METER_ID,
+                grid_power_raw,
+                grid_power,
+            )
+
+        if eps_load_power is not None:
+            updated.update(
+                {
+                    "eps_load_power_mqtt": eps_load_power,
+                    "eps_load_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT EPS load power (confirmed vs REST eps_load_power) for %s from meter %s: %s W",
+                system_id,
+                MQTT_EMS_EPS_LOAD_POWER_METER_ID,
+                eps_load_power,
+            )
+
+        # The following are settings/limits, not fluctuating power readings or
+        # cumulative totals: no decrease-tolerance guard applies.
+        if charge_floor_soc_raw is not None:
+            updated.update(
+                {
+                    "charge_floor_soc_mqtt": charge_floor_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                    "charge_floor_soc_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT charge floor SOC for %s from meter %s: raw=%s -> %.1f%%",
+                system_id,
+                MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
+                charge_floor_soc_raw,
+                charge_floor_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+            )
+
+        if discharge_ceiling_soc_raw is not None:
+            updated.update(
+                {
+                    "discharge_ceiling_soc_mqtt": discharge_ceiling_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                    "discharge_ceiling_soc_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT discharge ceiling SOC for %s from meter %s: raw=%s -> %.1f%%",
+                system_id,
+                MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+                discharge_ceiling_soc_raw,
+                discharge_ceiling_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+            )
+
+        if charge_power_limit is not None:
+            updated.update(
+                {
+                    "charge_power_limit_mqtt": charge_power_limit,
+                    "charge_power_limit_mqtt_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT charge power limit for %s from meter %s: %s W",
+                system_id,
+                MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+                charge_power_limit,
+            )
+
+        if standby_raw is not None:
+            updated.update(
+                {
+                    "standby_raw": str(int(standby_raw)),
+                    "standby_raw_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT standby state for %s from meter %s: raw=%s",
+                system_id,
+                MQTT_EMS_STANDBY_METER_ID,
+                standby_raw,
+            )
+
+        if output_power_limit_raw is not None:
+            updated.update(
+                {
+                    "output_power_limit_raw": str(int(output_power_limit_raw)),
+                    "output_power_limit_raw_at": dt_util.utcnow(),
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT output power limit preset for %s from meter %s: raw=%s",
+                system_id,
+                MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+                output_power_limit_raw,
+            )
 
         self._mqtt_live_values[system_id] = updated
 
@@ -1001,6 +1453,114 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "source": "mqtt",
                     "age_seconds": pv_energy_total_age_seconds,
                 }
+
+        soc_timestamp = live.get("battery_soc_mqtt_at")
+        soc_value = _coerce_float(live.get("battery_soc_mqtt"))
+        if soc_value is not None and soc_timestamp is not None:
+            soc_age_seconds = (now - soc_timestamp).total_seconds()
+            if soc_age_seconds <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS:
+                merged["battery_soc_mqtt"] = soc_value
+                mqtt_live["battery_soc_mqtt"] = {
+                    "value": soc_value,
+                    "source": "mqtt",
+                    "age_seconds": soc_age_seconds,
+                }
+
+        pv1_power_timestamp = live.get("pv1_power_mqtt_at")
+        pv1_power_value = _coerce_float(live.get("pv1_power_mqtt"))
+        pv1_power_fresh = (
+            pv1_power_value is not None
+            and pv1_power_timestamp is not None
+            and (now - pv1_power_timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+        )
+
+        pv2_power_timestamp = live.get("pv2_power_mqtt_at")
+        pv2_power_value = _coerce_float(live.get("pv2_power_mqtt"))
+        pv2_power_fresh = (
+            pv2_power_value is not None
+            and pv2_power_timestamp is not None
+            and (now - pv2_power_timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+        )
+
+        if pv1_power_fresh and pv2_power_fresh:
+            merged["pv_power_mqtt"] = pv1_power_value + pv2_power_value
+            mqtt_live["pv_power_mqtt"] = {
+                "value": pv1_power_value + pv2_power_value,
+                "source": "mqtt",
+                "pv1_power": pv1_power_value,
+                "pv2_power": pv2_power_value,
+            }
+
+        battery_mode_raw = live.get("battery_mode_raw")
+        if isinstance(battery_mode_raw, str):
+            merged["battery_mode_raw"] = battery_mode_raw
+            mqtt_live["battery_mode_raw"] = {
+                "value": battery_mode_raw,
+                "source": "mqtt",
+            }
+
+        standby_raw = live.get("standby_raw")
+        if isinstance(standby_raw, str):
+            merged["standby_raw"] = standby_raw
+            mqtt_live["standby_raw"] = {"value": standby_raw, "source": "mqtt"}
+
+        output_power_limit_raw = live.get("output_power_limit_raw")
+        if isinstance(output_power_limit_raw, str):
+            merged["output_power_limit_raw"] = output_power_limit_raw
+            mqtt_live["output_power_limit_raw"] = {"value": output_power_limit_raw, "source": "mqtt"}
+
+        # Settings/limits persist indefinitely once received, like
+        # battery_mode_raw/standby_raw above - no staleness gate, since they
+        # only change when explicitly set (by the app or by this integration).
+        for key in ("charge_floor_soc_mqtt", "discharge_ceiling_soc_mqtt", "charge_power_limit_mqtt"):
+            value = _coerce_float(live.get(key))
+            if value is not None:
+                merged[key] = value
+                mqtt_live[key] = {"value": value, "source": "mqtt"}
+
+        for key in (
+            "battery_power_mqtt",
+            "other_load_power_mqtt",
+            "grid_power_mqtt",
+            "eps_load_power_mqtt",
+        ):
+            timestamp = live.get(f"{key}_at")
+            value = _coerce_float(live.get(key))
+            if (
+                value is not None
+                and timestamp is not None
+                and (now - timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+            ):
+                merged[key] = value
+                mqtt_live[key] = {"value": value, "source": "mqtt"}
+
+        # ac_main_power_mqtt (MQTT_PCS_AC_MAIN_POWER_METER_ID) is an unsigned
+        # magnitude at the raw-meter level - the device itself does not report a
+        # sign for this quantity. REST ac_main_power, by contrast, is signed
+        # (positive while the battery discharges to supply AC power, negative
+        # while it charges), and that sign is always the *opposite* of
+        # battery_power_mqtt's sign (MQTT_BMS1_BATTERY_POWER_METER_ID: negative
+        # while discharging, positive while charging) - confirmed across several
+        # live cross-checks on 2026-08-01, e.g. REST ac_main_power read -854 W
+        # while battery_power_mqtt was positive (charging) and +654 W a few
+        # minutes later while battery_power_mqtt was negative (discharging). So
+        # sign the magnitude here using -sign(battery_power_mqtt) instead of
+        # exposing an unsigned value; falls back to unsigned if battery_power_mqtt
+        # isn't available/fresh (sign unknown) or is exactly 0 (sign undefined).
+        ac_main_timestamp = live.get("ac_main_power_mqtt_at")
+        ac_main_magnitude = _coerce_float(live.get("ac_main_power_mqtt"))
+        if (
+            ac_main_magnitude is not None
+            and ac_main_timestamp is not None
+            and (now - ac_main_timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+        ):
+            battery_power_signed = merged.get("battery_power_mqtt")
+            if isinstance(battery_power_signed, (int, float)) and battery_power_signed != 0:
+                ac_main_power_signed = math.copysign(ac_main_magnitude, -battery_power_signed)
+            else:
+                ac_main_power_signed = ac_main_magnitude
+            merged["ac_main_power_mqtt"] = ac_main_power_signed
+            mqtt_live["ac_main_power_mqtt"] = {"value": ac_main_power_signed, "source": "mqtt"}
 
         if daily_energy:
             merged["daily_energy"] = daily_energy
@@ -1475,6 +2035,23 @@ def _safe_get(data: Any, *path: str) -> Any:
 def _mqtt_timestamp_ms() -> str:
     """Return a Unix timestamp in milliseconds as a string."""
     return str(int(dt_util.utcnow().timestamp() * 1000))
+
+
+def _mqtt_control_values_match(expected: Any, actual: Any) -> bool:
+    """Compare an expected control value against a bundle value after a write.
+
+    Floats are compared with a small tolerance to absorb the raw-value <->
+    percent/Watts round trip (e.g. SOC limits stored as raw/10); everything
+    else (str, bool) is compared exactly.
+    """
+    if actual is None:
+        return False
+    if isinstance(expected, float) or isinstance(actual, float):
+        try:
+            return abs(float(actual) - float(expected)) < 0.01
+        except (TypeError, ValueError):
+            return False
+    return actual == expected
 
 
 def _coerce_float(value: Any) -> float | None:
