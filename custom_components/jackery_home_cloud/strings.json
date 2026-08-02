@@ -20,7 +20,7 @@
           "mqtt_poll_interval": "MQTT live meter poll interval (seconds)"
         },
         "data_description": {
-          "mqtt_poll_interval": "How often to actively request live MQTT meter values (AC output, battery and PV totals). Between 15 and 600 seconds, default 60."
+          "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       },
       "reauth_confirm": {
@@ -54,7 +54,7 @@
           "mqtt_poll_interval": "MQTT live meter poll interval (seconds)"
         },
         "data_description": {
-          "mqtt_poll_interval": "How often to actively request live MQTT meter values (AC output, battery and PV totals). Between 15 and 600 seconds, default 60."
+          "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       }
     },
@@ -87,7 +87,7 @@
           "mqtt_poll_interval": "MQTT live meter poll interval (seconds)"
         },
         "data_description": {
-          "mqtt_poll_interval": "How often to actively request live MQTT meter values (AC output, battery and PV totals). Between 15 and 600 seconds, default 60."
+          "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       }
     },

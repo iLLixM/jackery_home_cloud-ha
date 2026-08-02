@@ -49,13 +49,19 @@ DEFAULT_MQTT_TLS_INSECURE = False
 DEFAULT_MQTT_USE_TLS = True
 DEFAULT_MQTT_POLL_INTERVAL_SECONDS = 60
 MQTT_POLL_INTERVAL_MIN_SECONDS = 5
-MQTT_POLL_INTERVAL_MAX_SECONDS = 600
+MQTT_POLL_INTERVAL_MAX_SECONDS = 60
 MQTT_DEFAULT_PORT = 8883
 MQTT_LWT_TOPIC_TEMPLATE = "v1/iot_gw/gw_lwt/{device_serial}"
 MQTT_GW_DATA_TOPIC_TEMPLATE = "v1/iot_gw/gw/data/{device_serial}"
 MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE = "v1/iot_gw/cloud/data/{device_serial}"
 
 MQTT_LIVE_VALUE_MAX_AGE_SECONDS = 900
+# Fixed (non-user-configurable) cadence for the slow "cumulative totals" poll
+# group - 3x headroom under MQTT_LIVE_VALUE_MAX_AGE_SECONDS above.
+MQTT_TOTALS_POLL_INTERVAL_SECONDS = 300
+# MQTT_POLL_INTERVAL_MAX_SECONDS above must stay comfortably below this
+# value, or the power/SOC sensors it gates will flap between MQTT and REST
+# every poll cycle.
 MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS = 120
 MQTT_EMS_BATTERY_CHARGED_TODAY_METER_ID = "16952321"
 MQTT_EMS_BATTERY_DISCHARGED_TODAY_METER_ID = "16953345"

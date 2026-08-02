@@ -171,6 +171,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
             raw_value=value,
             bundle_key="battery_mode_raw",
             expected_bundle_value=value,
+            refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
 
     async def _async_request_state(self) -> None:
@@ -278,6 +279,7 @@ class JackeryOutputPowerLimitSelect(CoordinatorEntity[JackeryHomeCloudCoordinato
             raw_value=value,
             bundle_key="output_power_limit_raw",
             expected_bundle_value=value,
+            refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
 
     async def _async_request_state(self) -> None:

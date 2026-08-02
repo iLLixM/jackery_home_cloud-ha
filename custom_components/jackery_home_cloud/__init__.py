@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_BASE_URL,
     DEFAULT_MQTT_POLL_INTERVAL_SECONDS,
     DOMAIN,
+    MQTT_TOTALS_POLL_INTERVAL_SECONDS,
     PLATFORMS,
 )
 from .coordinator import JackeryHomeCloudCoordinator
@@ -130,14 +131,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry.options.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
             )
 
-            async def _async_poll_live_meters(_now) -> None:
-                await coordinator.async_request_live_meter_values()
+            async def _async_poll_fast_live_meters(_now) -> None:
+                await coordinator.async_request_fast_live_meter_values()
+
+            async def _async_poll_totals_live_meters(_now) -> None:
+                await coordinator.async_request_totals_live_meter_values()
 
             entry.async_on_unload(
                 async_track_time_interval(
                     hass,
-                    _async_poll_live_meters,
+                    _async_poll_fast_live_meters,
                     timedelta(seconds=poll_interval_seconds),
+                )
+            )
+            entry.async_on_unload(
+                async_track_time_interval(
+                    hass,
+                    _async_poll_totals_live_meters,
+                    timedelta(seconds=MQTT_TOTALS_POLL_INTERVAL_SECONDS),
                 )
             )
         except JackeryHomeCryptoError as err:

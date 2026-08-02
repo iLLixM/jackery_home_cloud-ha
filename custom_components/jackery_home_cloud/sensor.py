@@ -689,6 +689,7 @@ class JackeryScheduleSensor(JackeryBaseSensor):
             raw_value=raw_value,
             bundle_key=f"{kind}_window_{slot}",
             expected_bundle_value=raw_value,
+            refresh_group=self.coordinator.async_request_schedule_live_meter_values,
         )
 
     async def _async_clear_window(self, kind: str, meter_ids: tuple[str, ...], slot: int) -> None:
@@ -700,6 +701,7 @@ class JackeryScheduleSensor(JackeryBaseSensor):
             raw_value="0",
             bundle_key=f"{kind}_window_{slot}",
             expected_bundle_value="0",
+            refresh_group=self.coordinator.async_request_schedule_live_meter_values,
         )
 
 

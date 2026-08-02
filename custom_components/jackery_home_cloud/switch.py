@@ -325,6 +325,7 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
             raw_value=raw_value,
             bundle_key="standby_raw",
             expected_bundle_value=raw_value,
+            refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
 
 
@@ -443,6 +444,7 @@ class JackeryAutoStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], S
             raw_value=raw_value,
             bundle_key="auto_standby_raw",
             expected_bundle_value=raw_value,
+            refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
 
 
