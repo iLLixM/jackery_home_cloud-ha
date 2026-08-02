@@ -73,9 +73,6 @@ MQTT_EMS_PV_ENERGY_TOTAL_METER_ID = "16961537"
 MQTT_EMS_REBOOT_METER_ID = "22027265"
 MQTT_EMS_AC_OUTPUT_METER_ID = "23120897"
 
-# Unverified candidate meters for the MQTT-vs-REST comparison sensors below.
-# Cross-checked against REST snapshots where possible; not yet confirmed
-# against the Jackery app.
 MQTT_EMS_BATTERY_SOC_METER_ID: str = "21548033"
 MQTT_EMS_BATTERY_SOC_SCALE = 10.0
 MQTT_PCS_PV1_POWER_METER_ID = "50490369"
@@ -125,8 +122,10 @@ MQTT_EMS_DISCHARGE_WINDOW_METER_IDS: tuple[str, ...] = tuple(str(23147521 + i) f
 
 # Battery SOC operating window: charge floor (do not resume charging below
 # this SOC) and discharge ceiling (do not discharge above this SOC). Both
-# are raw / 10, same scale as MQTT_EMS_BATTERY_SOC_SCALE, and are always
-# sent together in one data_set even when only one value actually changed.
+# are raw / 10, same scale as MQTT_EMS_BATTERY_SOC_SCALE.
+# The official Android app was observed sending both SOC boundary meters in
+# the same data_set request even when only one value was changed. Direct MQTT
+# testing confirms that both meters can also be read and written independently.
 MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID: str = "23136257"
 MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID: str = "23135233"
 
