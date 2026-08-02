@@ -53,7 +53,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Jackery MQTT-backed battery mode select for a config entry."""
+    """Set up the Jackery MQTT-backed work mode select for a config entry."""
     if not entry.options.get(CONF_ENABLE_MQTT):
         return
 
@@ -117,7 +117,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
         mqtt_client: Any,
         device_sn: str,
     ) -> None:
-        """Initialize the battery mode select."""
+        """Initialize the work mode select."""
         super().__init__(coordinator)
         self._system_id = system_id
         self._bundle = dict(bundle)
@@ -144,7 +144,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
 
     @property
     def current_option(self) -> str | None:
-        """Return the last known battery mode."""
+        """Return the last known work mode."""
         bundle = self._system_bundle or self._bundle or {}
         raw_value = bundle.get("battery_mode_raw")
         if not isinstance(raw_value, str):
@@ -158,12 +158,12 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
         return bundle if isinstance(bundle, dict) else None
 
     async def async_select_option(self, option: str) -> None:
-        """Publish the desired battery mode via MQTT and verify it was applied."""
+        """Publish the desired work mode via MQTT and verify it was applied."""
         value = MODE_OPTIONS.get(option)
         if value is None:
-            raise HomeAssistantError(f"Unknown Jackery battery mode option: {option}")
+            raise HomeAssistantError(f"Unknown Jackery work mode option: {option}")
         if not self._device_sn:
-            raise HomeAssistantError("No Jackery device serial is available for battery mode control.")
+            raise HomeAssistantError("No Jackery device serial is available for work mode control.")
 
         await self.coordinator.async_set_meter_value(
             system_id=self._system_id,
@@ -176,7 +176,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
         )
 
     async def _async_request_state(self) -> None:
-        """Actively request the current battery mode via data_get."""
+        """Actively request the current work mode via data_get."""
         if not self._device_sn:
             return
         topic = MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=self._device_sn)
@@ -199,7 +199,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
         except Exception as err:
             if "not connected" in str(err).lower():
                 return
-            raise HomeAssistantError(f"Failed to request Jackery battery mode: {err}") from err
+            raise HomeAssistantError(f"Failed to request Jackery work mode: {err}") from err
 
 
 class JackeryOutputPowerLimitSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], SelectEntity):
