@@ -23,7 +23,8 @@ from .const import (
     MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE,
     MQTT_EMS_BATTERY_SOC_SCALE,
     MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
-    MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+    MQTT_EMS_CHARGE_POWER_LIMIT_MAX_W,
+    MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
     MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
 )
 from .coordinator import JackeryHomeCloudCoordinator
@@ -55,7 +56,7 @@ async def async_setup_entry(
         for entity_cls in (
             JackeryChargeFloorSocNumber,
             JackeryDischargeCeilingSocNumber,
-            JackeryChargePowerLimitNumber,
+            JackeryFeedPowerLimitNumber,
         ):
             entities.append(
                 entity_cls(
@@ -231,18 +232,18 @@ class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
         return str(int(round(value * MQTT_EMS_BATTERY_SOC_SCALE)))
 
 
-class JackeryChargePowerLimitNumber(_JackeryMqttNumberEntity):
+class JackeryFeedPowerLimitNumber(_JackeryMqttNumberEntity):
     """Maximum feed-in power."""
 
-    _attr_name = "Charge power limit"
+    _attr_name = "feed power limit"
     _attr_icon = "mdi:current-ac"
     _attr_native_min_value = 0
-    _attr_native_max_value = 800
+    _attr_native_max_value = MQTT_EMS_CHARGE_POWER_LIMIT_MAX_W
     _attr_native_step = 10
     _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _meter_id = MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID
-    _bundle_key = "charge_power_limit_mqtt"
-    _unique_id_suffix = "charge_power_limit"
+    _meter_id = MQTT_EMS_FEED_POWER_LIMIT_METER_ID
+    _bundle_key = "feed_power_limit_mqtt"
+    _unique_id_suffix = "feed_power_limit"
 
 
 def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:
