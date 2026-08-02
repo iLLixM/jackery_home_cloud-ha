@@ -35,14 +35,14 @@ from .const import (
     MQTT_BMS1_BATTERY_POWER_METER_ID,
     MQTT_EMS_AC_OUTPUT_METER_ID,
     MQTT_EMS_AUTO_STANDBY_METER_ID,
-    MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
-    MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+    MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
+    MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
     MQTT_EMS_CHARGE_WINDOW_METER_IDS,
-    MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+    MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
     MQTT_EMS_EPS_LOAD_POWER_METER_ID,
     MQTT_EMS_GRID_POWER_METER_ID,
-    MQTT_EMS_MODE_METER_ID,
+    MQTT_EMS_WORK_MODE_METER_ID,
     MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
     MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
     MQTT_EMS_STANDBY_METER_ID,
@@ -104,10 +104,10 @@ _TOTALS_EMS_METER_IDS: tuple[str, ...] = (
 )
 
 _CONFIG_EMS_METER_IDS: tuple[str, ...] = (
-    MQTT_EMS_MODE_METER_ID,
-    MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
-    MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
-    MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+    MQTT_EMS_WORK_MODE_METER_ID,
+    MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
+    MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
+    MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
     MQTT_EMS_STANDBY_METER_ID,
     MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
     MQTT_EMS_AUTO_STANDBY_METER_ID,
@@ -963,7 +963,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         battery_mode_raw = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
-            meter_id=MQTT_EMS_MODE_METER_ID,
+            meter_id=MQTT_EMS_WORK_MODE_METER_ID,
         )
         ac_main_power_magnitude = extract_ems_meter_value(
             payload,
@@ -995,17 +995,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         charge_floor_soc_raw = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
-            meter_id=MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
+            meter_id=MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
         )
         discharge_ceiling_soc_raw = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
-            meter_id=MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+            meter_id=MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
         )
         charge_power_limit = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
-            meter_id=MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+            meter_id=MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
         )
         standby_raw = extract_ems_meter_value(
             payload,
@@ -1240,7 +1240,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug(
                 "Accepted MQTT battery mode for %s from meter %s: raw=%s",
                 system_id,
-                MQTT_EMS_MODE_METER_ID,
+                MQTT_EMS_WORK_MODE_METER_ID,
                 battery_mode_raw,
             )
 
@@ -1328,7 +1328,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug(
                 "Accepted MQTT charge floor SOC for %s from meter %s: raw=%s -> %.1f%%",
                 system_id,
-                MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
+                MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
                 charge_floor_soc_raw,
                 charge_floor_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
             )
@@ -1343,7 +1343,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug(
                 "Accepted MQTT discharge ceiling SOC for %s from meter %s: raw=%s -> %.1f%%",
                 system_id,
-                MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+                MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
                 discharge_ceiling_soc_raw,
                 discharge_ceiling_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
             )
@@ -1358,7 +1358,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug(
                 "Accepted MQTT charge power limit for %s from meter %s: %s W",
                 system_id,
-                MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID,
+                MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
                 charge_power_limit,
             )
 

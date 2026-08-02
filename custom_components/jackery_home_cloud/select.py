@@ -21,12 +21,12 @@ from .const import (
     MANUFACTURER,
     MODEL_NAME_MAP,
     MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE,
-    MQTT_EMS_MODE_METER_ID,
+    MQTT_EMS_WORK_MODE_METER_ID,
     MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
 )
 from .coordinator import JackeryHomeCloudCoordinator
 
-# Value mapping for MQTT_EMS_MODE_METER_ID (see const.py), using the same
+# Value mapping for MQTT_EMS_WORK_MODE_METER_ID (see const.py), using the same
 # labels as the Jackery Home app.
 MODE_OPTIONS: dict[str, str] = {
     "Self-consumption": "2",
@@ -167,7 +167,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
 
         await self.coordinator.async_set_meter_value(
             system_id=self._system_id,
-            meter_id=MQTT_EMS_MODE_METER_ID,
+            meter_id=MQTT_EMS_WORK_MODE_METER_ID,
             raw_value=value,
             bundle_key="battery_mode_raw",
             timestamp_key="battery_mode_raw_at",
@@ -189,7 +189,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
                 "dev_list": [
                     {
                         "dev_sn": f"ems_{self._device_sn}",
-                        "meter_list": [MQTT_EMS_MODE_METER_ID],
+                        "meter_list": [MQTT_EMS_WORK_MODE_METER_ID],
                     }
                 ]
             },

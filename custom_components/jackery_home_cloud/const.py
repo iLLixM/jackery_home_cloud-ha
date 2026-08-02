@@ -112,7 +112,7 @@ MQTT_EMS_EPS_LOAD_POWER_METER_ID: str = "16933889"
 MQTT_EMS_WORK_MODE_METER_ID: str = "23132161"
 
 # Scheduled charge/discharge time-window table, only takes effect while
-# MQTT_EMS_MODE_METER_ID == "5". Each meter holds an 8-digit "HHMMHHMM"
+# MQTT_EMS_WORK_MODE_METER_ID == "5". Each meter holds an 8-digit "HHMMHHMM"
 # string (start+end, no separator) or "0" for an unused slot. The two
 # 10-meter ranges are INDEPENDENT sequential lists, not paired per-cycle:
 # MQTT_EMS_CHARGE_WINDOW_METER_IDS[0] is always the first charge window
@@ -142,7 +142,7 @@ MQTT_EMS_STANDBY_RAW_ON = "1"
 MQTT_EMS_STANDBY_RAW_OFF = "2"
 
 # Max output (discharge) power limit, as a preset index rather than a direct
-# Watts value (unlike MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID above, which is a
+# Watts value (unlike MQTT_EMS_FEED_POWER_LIMIT_METER_ID above, which is a
 # direct W value). See OUTPUT_POWER_LIMIT_OPTIONS in select.py for the known
 # preset values.
 MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID: str = "23324673"

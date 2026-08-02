@@ -22,10 +22,10 @@ from .const import (
     MODEL_NAME_MAP,
     MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE,
     MQTT_EMS_BATTERY_SOC_SCALE,
-    MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID,
-    MQTT_EMS_CHARGE_POWER_LIMIT_MAX_W,
+    MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
+    MQTT_EMS_FEED_POWER_LIMIT_MAX_W,
     MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
-    MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID,
+    MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
 )
 from .coordinator import JackeryHomeCloudCoordinator
 
@@ -136,6 +136,10 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
         """Convert the entity's native value to a raw meter value string."""
         return str(int(round(value)))
 
+    def _normalize_native_value(self, value: float) -> float:
+        """Normalize a requested value before it is written (no-op by default)."""
+        return value
+
     @property
     def native_value(self) -> float | None:
         """Return the last known value."""
@@ -152,6 +156,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
         """Publish the desired value via MQTT and verify it was applied."""
         if not self._device_sn:
             raise HomeAssistantError("No Jackery device serial is available for this control.")
+        value = self._normalize_native_value(value)
         raw_value = self._native_to_raw(value)
         await self.coordinator.async_set_meter_value(
             system_id=self._system_id,
@@ -199,7 +204,7 @@ class JackeryChargeFloorSocNumber(_JackeryMqttNumberEntity):
     _attr_native_max_value = 49
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
-    _meter_id = MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID
+    _meter_id = MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID
     _bundle_key = "charge_floor_soc_mqtt"
     _unique_id_suffix = "charge_floor_soc"
 
@@ -220,7 +225,7 @@ class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
     _attr_native_max_value = 100
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
-    _meter_id = MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID
+    _meter_id = MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID
     _bundle_key = "discharge_ceiling_soc_mqtt"
     _unique_id_suffix = "discharge_ceiling_soc"
 
@@ -235,15 +240,23 @@ class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
 class JackeryFeedPowerLimitNumber(_JackeryMqttNumberEntity):
     """Maximum feed-in power."""
 
-    _attr_name = "feed power limit"
+    _attr_name = "Feed power limit"
     _attr_icon = "mdi:current-ac"
     _attr_native_min_value = 0
-    _attr_native_max_value = MQTT_EMS_CHARGE_POWER_LIMIT_MAX_W
+    _attr_native_max_value = MQTT_EMS_FEED_POWER_LIMIT_MAX_W
     _attr_native_step = 10
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _meter_id = MQTT_EMS_FEED_POWER_LIMIT_METER_ID
     _bundle_key = "feed_power_limit_mqtt"
     _unique_id_suffix = "feed_power_limit"
+
+    def _raw_to_native(self, raw: float) -> int:
+        """Return the feed power limit as a whole watt value."""
+        return int(round(raw))
+
+    def _normalize_native_value(self, value: float) -> int:
+        """Normalize the requested value to a whole 10 W step."""
+        return int(round(value / 10.0) * 10)
 
 
 def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:
