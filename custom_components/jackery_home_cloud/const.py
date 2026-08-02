@@ -128,11 +128,11 @@ MQTT_EMS_DISCHARGE_WINDOW_METER_IDS: tuple[str, ...] = tuple(str(23147521 + i) f
 # are raw / 10, same scale as MQTT_EMS_BATTERY_SOC_SCALE, and are always
 # sent together in one data_set even when only one value actually changed.
 MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID: str = "23136257"
-MQTT_EMS_DISCHARGE_CEILING_SOC_METER_ID: str = "23135233"
+MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID: str = "23135233"
 
-# Max charge (input) power limit, in Watts directly (not scaled, unlike the
+# Max feed-in power limit, in Watts directly (not scaled, unlike the
 # SOC meters above).
-MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID: str = "23286785"
+MQTT_EMS_FEED_POWER_LIMIT_METER_ID: str = "23286785"
 
 # Standby toggle (labeled "Standby" / "Exit standby" in the app). See
 # MQTT_EMS_STANDBY_RAW_ON / MQTT_EMS_STANDBY_RAW_OFF below for the raw

@@ -190,31 +190,32 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
 
 
 class JackeryChargeFloorSocNumber(_JackeryMqttNumberEntity):
-    """Minimum battery SOC below which charging should resume."""
+    """Minimum battery SOC below which discharging should stop. Discharge setting range according to android app is from 5% to 49%"""
 
-    _attr_name = "Charge floor SOC"
+    _attr_name = "Discharge Limit"
     _attr_icon = "mdi:battery-charging-low"
-    _attr_native_min_value = 0
-    _attr_native_max_value = 100
+    _attr_native_min_value = 5
+    _attr_native_max_value = 49
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
     _meter_id = MQTT_EMS_CHARGE_FLOOR_SOC_METER_ID
     _bundle_key = "charge_floor_soc_mqtt"
     _unique_id_suffix = "charge_floor_soc"
 
-    def _raw_to_native(self, raw: float) -> float:
-        return raw
+    def _raw_to_native(self, raw: float) -> int:
+        """Return the SOC limit as a whole percentage."""
+        return int(round(raw))
 
     def _native_to_raw(self, value: float) -> str:
         return str(int(round(value * MQTT_EMS_BATTERY_SOC_SCALE)))
 
 
 class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
-    """Maximum battery SOC above which discharging should stop."""
+    """Maximum battery SOC above which charging should stop. Android app allows mimimum value of 50%"""
 
-    _attr_name = "Discharge ceiling SOC"
+    _attr_name = "Charge limit"
     _attr_icon = "mdi:battery-charging-high"
-    _attr_native_min_value = 0
+    _attr_native_min_value = 50
     _attr_native_max_value = 100
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -222,20 +223,21 @@ class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
     _bundle_key = "discharge_ceiling_soc_mqtt"
     _unique_id_suffix = "discharge_ceiling_soc"
 
-    def _raw_to_native(self, raw: float) -> float:
-        return raw
+    def _raw_to_native(self, raw: float) -> int:
+        """Return the SOC limit as a whole percentage."""
+        return int(round(raw))
 
     def _native_to_raw(self, value: float) -> str:
         return str(int(round(value * MQTT_EMS_BATTERY_SOC_SCALE)))
 
 
 class JackeryChargePowerLimitNumber(_JackeryMqttNumberEntity):
-    """Maximum charge (input) power."""
+    """Maximum feed-in power."""
 
     _attr_name = "Charge power limit"
     _attr_icon = "mdi:current-ac"
     _attr_native_min_value = 0
-    _attr_native_max_value = 2000
+    _attr_native_max_value = 800
     _attr_native_step = 10
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _meter_id = MQTT_EMS_CHARGE_POWER_LIMIT_METER_ID
