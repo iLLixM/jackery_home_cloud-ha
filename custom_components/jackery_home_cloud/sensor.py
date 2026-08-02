@@ -137,11 +137,10 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_power_mqtt",
-        name="Battery power (MQTT)",
+        name="Battery power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        entity_category=EntityCategory.DIAGNOSTIC,
         requires_mqtt=True,
         # No REST equivalent exists for this at all. See
         # MQTT_BMS1_BATTERY_POWER_METER_ID in const.py for the sign
@@ -688,6 +687,7 @@ class JackeryScheduleSensor(JackeryBaseSensor):
             meter_id=meter_ids[slot],
             raw_value=raw_value,
             bundle_key=f"{kind}_window_{slot}",
+            timestamp_key=f"{kind}_window_{slot}_at",
             expected_bundle_value=raw_value,
             refresh_group=self.coordinator.async_request_schedule_live_meter_values,
         )
@@ -700,6 +700,7 @@ class JackeryScheduleSensor(JackeryBaseSensor):
             meter_id=meter_ids[slot],
             raw_value="0",
             bundle_key=f"{kind}_window_{slot}",
+            timestamp_key=f"{kind}_window_{slot}_at",
             expected_bundle_value="0",
             refresh_group=self.coordinator.async_request_schedule_live_meter_values,
         )

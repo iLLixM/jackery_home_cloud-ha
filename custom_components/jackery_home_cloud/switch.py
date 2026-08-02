@@ -210,6 +210,7 @@ class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Swit
             meter_id=MQTT_EMS_AC_OUTPUT_METER_ID,
             raw_value="1" if is_on else "0",
             bundle_key="ac_output_state",
+            timestamp_key="ac_output_state_at",
             expected_bundle_value=is_on,
         )
 
@@ -324,6 +325,7 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
             meter_id=MQTT_EMS_STANDBY_METER_ID,
             raw_value=raw_value,
             bundle_key="standby_raw",
+            timestamp_key="standby_raw_at",
             expected_bundle_value=raw_value,
             refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
@@ -443,6 +445,7 @@ class JackeryAutoStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], S
             meter_id=MQTT_EMS_AUTO_STANDBY_METER_ID,
             raw_value=raw_value,
             bundle_key="auto_standby_raw",
+            timestamp_key="auto_standby_raw_at",
             expected_bundle_value=raw_value,
             refresh_group=self.coordinator.async_request_config_live_meter_values,
         )

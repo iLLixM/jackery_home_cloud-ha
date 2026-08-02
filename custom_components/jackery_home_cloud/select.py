@@ -26,13 +26,13 @@ from .const import (
 )
 from .coordinator import JackeryHomeCloudCoordinator
 
-# Value mapping for MQTT_EMS_MODE_METER_ID (see const.py). "Scheduled
-# charge/discharge" corresponds to the app's "Duration of use" mode.
+# Value mapping for MQTT_EMS_MODE_METER_ID (see const.py), using the same
+# labels as the Jackery Home app.
 MODE_OPTIONS: dict[str, str] = {
-    "Self consumption": "2",
+    "Self-consumption": "2",
     "Battery priority": "3",
-    "Smart / dynamic pricing": "7",
-    "Scheduled charge/discharge": "5",
+    "Time of use": "5",
+    "Intelligent mode": "7",
 }
 _MODE_VALUE_TO_OPTION: dict[str, str] = {value: label for label, value in MODE_OPTIONS.items()}
 
@@ -103,7 +103,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Battery mode"
+    _attr_name = "Work mode"
     _attr_icon = "mdi:battery-sync"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = list(MODE_OPTIONS.keys())
@@ -170,6 +170,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
             meter_id=MQTT_EMS_MODE_METER_ID,
             raw_value=value,
             bundle_key="battery_mode_raw",
+            timestamp_key="battery_mode_raw_at",
             expected_bundle_value=value,
             refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
@@ -278,6 +279,7 @@ class JackeryOutputPowerLimitSelect(CoordinatorEntity[JackeryHomeCloudCoordinato
             meter_id=MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
             raw_value=value,
             bundle_key="output_power_limit_raw",
+            timestamp_key="output_power_limit_raw_at",
             expected_bundle_value=value,
             refresh_group=self.coordinator.async_request_config_live_meter_values,
         )

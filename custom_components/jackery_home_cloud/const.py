@@ -108,10 +108,10 @@ MQTT_EMS_GRID_POWER_METER_ID: str = "16930817"
 MQTT_EMS_EPS_LOAD_POWER_METER_ID: str = "16933889"
 
 # Battery priority/mode register. See MODE_OPTIONS in select.py for the
-# value mapping. Mode "5" (Scheduled charge/discharge) only selects that
-# mode - it does not itself configure the schedule, which lives in the
-# separate charge/discharge time-window table below
-# (MQTT_EMS_CHARGE_WINDOW_METER_IDS / MQTT_EMS_DISCHARGE_WINDOW_METER_IDS).
+# value mapping. Mode "5" (Time of use) only selects that mode - it does
+# not itself configure the schedule, which lives in the separate
+# charge/discharge time-window table below (MQTT_EMS_CHARGE_WINDOW_METER_IDS
+# / MQTT_EMS_DISCHARGE_WINDOW_METER_IDS).
 MQTT_EMS_MODE_METER_ID: str = "23132161"
 
 # Scheduled charge/discharge time-window table, only takes effect while

@@ -181,6 +181,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_method": None,
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
+        self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     @property
     def mqtt_credentials(self) -> dict[str, Any]:
@@ -618,6 +619,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         meter_id: str,
         raw_value: str,
         bundle_key: str,
+        timestamp_key: str,
         expected_bundle_value: Any,
         dev_sn_prefix: str = "ems",
         max_attempts: int = 3,
@@ -628,25 +630,37 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         The Jackery MQTT broker only PUBACKs delivery to itself (qos=1), not
         that the device actually accepted/applied the value, and a rejected
-        or lost command otherwise fails silently. This waits after each
-        publish for the device's response (which flows into the coordinator
-        bundle via the normal MQTT ingestion pipeline, same as any other
-        data_report/data_get/data_set message) and compares bundle_key
-        against expected_bundle_value, retrying the publish up to
-        max_attempts times on mismatch before giving up.
+        or lost command otherwise fails silently. This publishes a freshly
+        timestamped data_set payload on each attempt (up to max_attempts)
+        and, after each publish, waits for the device's response (which
+        flows into the coordinator bundle via the normal MQTT ingestion
+        pipeline, same as any other data_report/data_get/data_set message)
+        and compares bundle_key against expected_bundle_value.
 
         A value match alone isn't proof the device actually processed this
         write - it could be a stale value that already matched before the
-        write was even sent. If bundle_key has a companion "<bundle_key>_at"
-        timestamp tracked in the coordinator's live-value cache, confirmation
-        also requires that timestamp to be at or after the moment this
-        attempt was published; bundle keys without a tracked timestamp fall
-        back to the value-only comparison. If refresh_group is given, it's
-        invoked once after the publish/verify loop finishes (success or
-        failure) to resync the meter's group - callers whose meter group
-        isn't otherwise periodically polled (config/schedule values) should
-        pass their group's async_request_*_live_meter_values method so a
-        failed write doesn't leave the bundle stale indefinitely.
+        write was even sent. Confirmation therefore also requires
+        timestamp_key - the companion live-value cache key that tracks when
+        bundle_key was last updated (e.g. "battery_mode_raw_at" for
+        bundle_key "battery_mode_raw") - to be present in the coordinator's
+        live-value cache and at or after the moment this attempt was
+        published. A missing timestamp is treated as unconfirmed, not as a
+        fallback to a value-only match; every bundle_key passed here must
+        have a companion timestamp tracked in _mqtt_live_values.
+
+        Writes are serialized per (system_id, meter_id) using a lock stored
+        in _meter_write_locks, so concurrent calls targeting the same meter
+        (e.g. a rapid double-toggle) can't interleave their publish/verify
+        cycles and confuse each other's freshness check. If refresh_group is
+        given, it's invoked once after the locked publish/verify section
+        finishes (success or failure), outside the lock: it only publishes a
+        read-only data_get and does not itself wait for or process the
+        response, so holding the write lock across it would gain nothing but
+        would needlessly delay other writers queued on the same meter.
+        Callers whose meter group isn't otherwise periodically polled
+        (config/schedule values) should pass their group's
+        async_request_*_live_meter_values method so a failed write doesn't
+        leave the bundle stale indefinitely.
         """
         mqtt_client = getattr(getattr(self.config_entry, "runtime_data", None), "mqtt_client", None)
         if mqtt_client is None:
@@ -661,77 +675,79 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise HomeAssistantError("No Jackery device serial is available for this control.")
 
         topic = self._mqtt_command_topic(device_sn)
-        payload = {
-            "cmd": "data_set",
-            "gw_sn": device_sn,
-            "timestamp": _mqtt_timestamp_ms(),
-            "info": {
-                "dev_list": [
-                    {
-                        "dev_sn": f"{dev_sn_prefix}_{device_sn}",
-                        "meter_list": [[meter_id, raw_value]],
-                    }
-                ]
-            },
-        }
+        ems_device_sn = f"{dev_sn_prefix}_{device_sn}"
 
-        timestamp_key = f"{bundle_key}_at"
+        lock = self._meter_write_locks.setdefault((system_id, meter_id), asyncio.Lock())
         last_seen: Any = None
         last_seen_at: Any = None
         last_error: Exception | None = None
         try:
-            for attempt in range(1, max_attempts + 1):
-                cutoff = dt_util.utcnow()
-                try:
-                    await mqtt_client.async_publish_json(topic, payload, qos=1)
-                except Exception as err:
-                    last_error = err
-                    _LOGGER.debug(
-                        "Jackery data_set publish failed for meter %s (attempt %s/%s): %s",
-                        meter_id,
-                        attempt,
-                        max_attempts,
-                        err,
-                    )
+            async with lock:
+                for attempt in range(1, max_attempts + 1):
+                    cutoff = dt_util.utcnow()
+                    payload = {
+                        "cmd": "data_set",
+                        "gw_sn": device_sn,
+                        "timestamp": _mqtt_timestamp_ms(),
+                        "info": {
+                            "dev_list": [
+                                {
+                                    "dev_sn": ems_device_sn,
+                                    "meter_list": [[meter_id, raw_value]],
+                                }
+                            ]
+                        },
+                    }
+                    try:
+                        await mqtt_client.async_publish_json(topic, payload, qos=1)
+                    except Exception as err:
+                        last_error = err
+                        _LOGGER.debug(
+                            "Jackery data_set publish failed for meter %s (attempt %s/%s): %s",
+                            meter_id,
+                            attempt,
+                            max_attempts,
+                            err,
+                        )
+                        await asyncio.sleep(verify_delay_seconds)
+                        continue
+
                     await asyncio.sleep(verify_delay_seconds)
-                    continue
+                    systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+                    current_bundle = systems.get(system_id)
+                    live = self._mqtt_live_values.get(system_id, {})
+                    last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
+                    last_seen_at = live.get(timestamp_key)
 
-                await asyncio.sleep(verify_delay_seconds)
-                systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
-                current_bundle = systems.get(system_id)
-                live = self._mqtt_live_values.get(system_id, {})
-                last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
-                last_seen_at = live.get(timestamp_key)
+                    value_matches = _mqtt_control_values_match(expected_bundle_value, last_seen)
+                    value_is_fresh = last_seen_at is not None and last_seen_at >= cutoff
 
-                value_matches = _mqtt_control_values_match(expected_bundle_value, last_seen)
-                value_is_fresh = last_seen_at is None or last_seen_at >= cutoff
+                    if value_matches and value_is_fresh:
+                        _LOGGER.debug(
+                            "Jackery data_set confirmed for meter %s after %s attempt(s): %s",
+                            meter_id,
+                            attempt,
+                            last_seen,
+                        )
+                        return
+                    if value_matches and not value_is_fresh:
+                        _LOGGER.debug(
+                            "Jackery data_set for meter %s matches expected %r but was not "
+                            "confirmed fresh (seen_at=%s, cutoff=%s); not confirming",
+                            meter_id,
+                            expected_bundle_value,
+                            last_seen_at,
+                            cutoff,
+                        )
 
-                if value_matches and value_is_fresh:
-                    _LOGGER.debug(
-                        "Jackery data_set confirmed for meter %s after %s attempt(s): %s",
-                        meter_id,
-                        attempt,
-                        last_seen,
-                    )
-                    return
-                if value_matches and not value_is_fresh:
-                    _LOGGER.debug(
-                        "Jackery data_set for meter %s matches expected %r but the cached "
-                        "update predates this attempt (seen_at=%s, cutoff=%s); not confirming",
-                        meter_id,
-                        expected_bundle_value,
-                        last_seen_at,
-                        cutoff,
-                    )
-
-            if last_seen is None and last_error is not None:
+                if last_seen is None and last_error is not None:
+                    raise HomeAssistantError(
+                        f"Failed to publish Jackery command for meter {meter_id} after {max_attempts} attempts: {last_error}"
+                    ) from last_error
                 raise HomeAssistantError(
-                    f"Failed to publish Jackery command for meter {meter_id} after {max_attempts} attempts: {last_error}"
-                ) from last_error
-            raise HomeAssistantError(
-                f"Jackery did not confirm meter {meter_id} = {raw_value!r} after {max_attempts} attempts "
-                f"(last seen: {last_seen!r})"
-            )
+                    f"Jackery did not confirm meter {meter_id} = {raw_value!r} after {max_attempts} attempts "
+                    f"(last seen: {last_seen!r})"
+                )
         finally:
             if refresh_group is not None:
                 try:

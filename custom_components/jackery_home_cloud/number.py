@@ -157,6 +157,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
             meter_id=self._meter_id,
             raw_value=raw_value,
             bundle_key=self._bundle_key,
+            timestamp_key=f"{self._bundle_key}_at",
             expected_bundle_value=value,
             refresh_group=self.coordinator.async_request_config_live_meter_values,
         )
