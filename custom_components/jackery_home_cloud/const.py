@@ -132,6 +132,7 @@ MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID: str = "23135233"
 # Max feed-in power limit, in Watts directly (not scaled, unlike the
 # SOC meters above).
 MQTT_EMS_FEED_POWER_LIMIT_METER_ID: str = "23286785"
+MQTT_EMS_FEED_POWER_LIMIT_MAX_W: int = 800
 
 # Standby toggle (labeled "Standby" / "Exit standby" in the app). See
 # MQTT_EMS_STANDBY_RAW_ON / MQTT_EMS_STANDBY_RAW_OFF below for the raw
