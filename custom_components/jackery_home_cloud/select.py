@@ -63,7 +63,7 @@ async def async_setup_entry(
 
     coordinator = runtime.coordinator
     systems = coordinator.data.get("systems", {}) if coordinator.data else {}
-    entities: list[JackeryBatteryModeSelect | JackeryOutputPowerLimitSelect] = []
+    entities: list[JackeryWorkModeSelect | JackeryOutputPowerLimitSelect] = []
 
     for system_id, bundle in systems.items():
         if not isinstance(bundle, Mapping):
@@ -72,7 +72,7 @@ async def async_setup_entry(
         if not device_sn:
             continue
         entities.append(
-            JackeryBatteryModeSelect(
+            JackeryWorkModeSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
@@ -94,8 +94,8 @@ async def async_setup_entry(
         async_add_entities(entities)
 
 
-class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], SelectEntity):
-    """MQTT-backed select for the Jackery battery priority mode.
+class JackeryWorkModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], SelectEntity):
+    """MQTT-backed select for the Jackery work mode (see MODE_OPTIONS above).
 
     Experimental: the meter mapping was reverse engineered from observed
     traffic rather than official documentation. Verify the selected mode
@@ -123,7 +123,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
         self._bundle = dict(bundle)
         self._mqtt_client = mqtt_client
         self._device_sn = str(device_sn).strip()
-        self._attr_unique_id = f"system_{system_id}_battery_mode"
+        self._attr_unique_id = f"system_{system_id}_work_mode"
         self._attr_device_info = _system_device_info(system_id, bundle)
 
     async def async_added_to_hass(self) -> None:
@@ -146,7 +146,7 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
     def current_option(self) -> str | None:
         """Return the last known work mode."""
         bundle = self._system_bundle or self._bundle or {}
-        raw_value = bundle.get("battery_mode_raw")
+        raw_value = bundle.get("work_mode_raw")
         if not isinstance(raw_value, str):
             return None
         return _MODE_VALUE_TO_OPTION.get(raw_value)
@@ -169,8 +169,8 @@ class JackeryBatteryModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], S
             system_id=self._system_id,
             meter_id=MQTT_EMS_WORK_MODE_METER_ID,
             raw_value=value,
-            bundle_key="battery_mode_raw",
-            timestamp_key="battery_mode_raw_at",
+            bundle_key="work_mode_raw",
+            timestamp_key="work_mode_raw_at",
             expected_bundle_value=value,
             refresh_group=self.coordinator.async_request_config_live_meter_values,
         )

@@ -641,8 +641,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         write - it could be a stale value that already matched before the
         write was even sent. Confirmation therefore also requires
         timestamp_key - the companion live-value cache key that tracks when
-        bundle_key was last updated (e.g. "battery_mode_raw_at" for
-        bundle_key "battery_mode_raw") - to be present in the coordinator's
+        bundle_key was last updated (e.g. "work_mode_raw_at" for
+        bundle_key "work_mode_raw") - to be present in the coordinator's
         live-value cache and at or after the moment this attempt was
         published. A missing timestamp is treated as unconfirmed, not as a
         fallback to a value-only match; every bundle_key passed here must
@@ -960,7 +960,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=MQTT_PCS_PV2_POWER_METER_ID,
             dev_sn_prefix="pcs",
         )
-        battery_mode_raw = extract_ems_meter_value(
+        work_mode_raw = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
             meter_id=MQTT_EMS_WORK_MODE_METER_ID,
@@ -1043,7 +1043,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and battery_soc_raw is None
             and pv1_power is None
             and pv2_power is None
-            and battery_mode_raw is None
+            and work_mode_raw is None
             and ac_main_power_magnitude is None
             and battery_power is None
             and other_load_power is None
@@ -1230,18 +1230,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pv2_power,
             )
 
-        if battery_mode_raw is not None:
+        if work_mode_raw is not None:
             updated.update(
                 {
-                    "battery_mode_raw": str(int(battery_mode_raw)),
-                    "battery_mode_raw_at": dt_util.utcnow(),
+                    "work_mode_raw": str(int(work_mode_raw)),
+                    "work_mode_raw_at": dt_util.utcnow(),
                 }
             )
             _LOGGER.debug(
                 "Accepted MQTT battery mode for %s from meter %s: raw=%s",
                 system_id,
                 MQTT_EMS_WORK_MODE_METER_ID,
-                battery_mode_raw,
+                work_mode_raw,
             )
 
         if ac_main_power_magnitude is not None:
@@ -1650,11 +1650,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "pv2_power": pv2_power_value,
             }
 
-        battery_mode_raw = live.get("battery_mode_raw")
-        if isinstance(battery_mode_raw, str):
-            merged["battery_mode_raw"] = battery_mode_raw
-            mqtt_live["battery_mode_raw"] = {
-                "value": battery_mode_raw,
+        work_mode_raw = live.get("work_mode_raw")
+        if isinstance(work_mode_raw, str):
+            merged["work_mode_raw"] = work_mode_raw
+            mqtt_live["work_mode_raw"] = {
+                "value": work_mode_raw,
                 "source": "mqtt",
             }
 
@@ -1686,7 +1686,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 merged[key] = value
 
         # Settings/limits persist indefinitely once received, like
-        # battery_mode_raw/standby_raw above - no staleness gate, since they
+        # work_mode_raw/standby_raw above - no staleness gate, since they
         # only change when explicitly set (by the app or by this integration).
         for key in ("charge_floor_soc_mqtt", "discharge_ceiling_soc_mqtt", "charge_power_limit_mqtt"):
             value = _coerce_float(live.get(key))
