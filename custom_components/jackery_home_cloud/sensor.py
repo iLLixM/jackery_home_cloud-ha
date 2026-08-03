@@ -489,8 +489,16 @@ def _build_entities(
     systems = coordinator.data.get("systems", {}) if coordinator.data else {}
 
     for system_id, bundle in systems.items():
+        # requires_mqtt sensors have no REST equivalent (e.g. instantaneous
+        # battery power, cumulative MQTT-only energy totals), so they only
+        # make sense for the single system the MQTT client is actually
+        # subscribed to (coordinator.is_mqtt_system). Merged REST/MQTT
+        # sensors (grid power, battery SOC, ...) are created for every
+        # system regardless, since they fall back to REST automatically for
+        # non-primary systems.
+        system_has_mqtt = mqtt_enabled and coordinator.is_mqtt_system(system_id)
         for description in SYSTEM_SENSOR_DESCRIPTIONS:
-            if description.requires_mqtt and not mqtt_enabled:
+            if description.requires_mqtt and not system_has_mqtt:
                 continue
             entities.append(
                 JackeryMetricSensor(
@@ -499,7 +507,7 @@ def _build_entities(
                     description=description,
                 )
             )
-        if mqtt_enabled:
+        if system_has_mqtt:
             entities.append(JackeryScheduleSensor(coordinator=coordinator, system_id=system_id))
 
     return entities

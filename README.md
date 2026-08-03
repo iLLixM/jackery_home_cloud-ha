@@ -260,6 +260,14 @@ The options flow provides the same MQTT settings and ordering as the initial con
 
 Disabling MQTT does not intentionally delete the stored TLS or raw-debug preferences. These settings remain available if MQTT is enabled again later.
 
+### Multiple systems
+
+Accounts containing multiple Jackery systems remain supported for REST-based data.
+
+In this initial MQTT implementation, MQTT telemetry and controls are enabled only for a single, automatically resolved primary system per config entry. Additional systems continue to use REST-based entities only; no MQTT-only entities or MQTT polling are created for them.
+
+Explicit MQTT system selection and validated multi-system MQTT support are planned for a later release.
+
 ### MQTT TLS option
 
 The option **Ignore invalid / expired MQTT TLS certificates** disables certificate and hostname verification for the Jackery MQTT connection.

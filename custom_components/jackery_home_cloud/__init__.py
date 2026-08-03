@@ -47,53 +47,6 @@ class JackeryHomeCloudRuntime:
     mqtt_client: JackeryMqttClient | None = None
 
 
-def _extract_main_device_serial(coordinator) -> str:
-    """Extract the main device serial used as targeted MQTT identifier."""
-    data = getattr(coordinator, "data", {}) or {}
-    systems = data.get("systems", {}) if isinstance(data, dict) else {}
-
-    for system_bundle in systems.values():
-        if not isinstance(system_bundle, dict):
-            continue
-
-        # Prefer values already normalized by coordinator/system assembly.
-        for key in ("main_device_serial", "system_no", "systemNo", "serial_number"):
-            value = system_bundle.get(key)
-            if value:
-                return str(value).strip()
-
-        system = system_bundle.get("system", {})
-        if isinstance(system, dict):
-            for key in ("systemNo", "deviceNo", "sn"):
-                value = system.get(key)
-                if value:
-                    return str(value).strip()
-
-        monitor = system_bundle.get("monitor", {})
-        if isinstance(monitor, dict):
-            energy_flow = monitor.get("energyFlowChartVO", {})
-            if isinstance(energy_flow, dict):
-                ems = energy_flow.get("emsGwVO", {})
-                if isinstance(ems, dict):
-                    value = ems.get("deviceNo") or ems.get("sn")
-                    if value:
-                        return str(value).strip()
-
-        devices = system_bundle.get("devices", {})
-        if isinstance(devices, dict):
-            for device in devices.values():
-                if not isinstance(device, dict):
-                    continue
-                product_key = str(device.get("productKey") or "").upper()
-                model_key = str(device.get("modelKey") or "").upper()
-                if "EMS" in product_key or "EMS" in model_key:
-                    value = device.get("deviceNo") or device.get("sn")
-                    if value:
-                        return str(value).strip()
-
-    return ""
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Jackery Home Cloud from a config entry."""
     session = async_get_clientsession(hass)
@@ -112,9 +65,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 coordinator.mqtt_credentials,
             )
             mqtt_tls_insecure = bool(entry.options.get(CONF_MQTT_TLS_INSECURE, False))
-            main_device_serial = _extract_main_device_serial(coordinator)
+            # coordinator.mqtt_system_id/mqtt_device_serial are resolved by
+            # _resolve_mqtt_system() during the first refresh above. Only
+            # this single system's topics are subscribed to below; every
+            # other REST-selected system in a multi-system account stays
+            # REST-only (see JackeryHomeCloudCoordinator.is_mqtt_system).
+            main_device_serial = coordinator.mqtt_device_serial
             _LOGGER.debug("Jackery MQTT TLS insecure option from config entry: %s", mqtt_tls_insecure)
-            _LOGGER.debug("Jackery main device serial selected for targeted MQTT subscriptions: %s", main_device_serial)
+            _LOGGER.debug(
+                "Jackery MQTT enabled for system_id=%s, device serial=%s (targeted subscriptions only)",
+                coordinator.mqtt_system_id,
+                main_device_serial,
+            )
             mqtt_client = JackeryMqttClient(
                 hass,
                 mqtt_credentials,

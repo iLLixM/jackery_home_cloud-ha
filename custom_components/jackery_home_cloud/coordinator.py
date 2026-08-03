@@ -182,6 +182,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Only one system is ever subscribed to on the Jackery MQTT broker
+        # (see JackeryMqttClient, which is initialized with a single device
+        # serial). These track which selected system that is, so MQTT
+        # telemetry/controls/polling can be limited to it instead of being
+        # silently applied to every REST-selected system. See
+        # _resolve_mqtt_system() and is_mqtt_system(). Explicit user-facing
+        # MQTT system selection is a planned follow-up (see CONTRIBUTING.md
+        # and the PR #4 review discussion on multi-system accounts).
+        self.mqtt_system_id: str | None = None
+        self.mqtt_device_serial: str = ""
 
     @property
     def mqtt_credentials(self) -> dict[str, Any]:
@@ -221,10 +231,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
+        self.mqtt_system_id, self.mqtt_device_serial = self._resolve_mqtt_system(
+            selected_system_ids, dict(system_results)
+        )
+
         bundles: dict[str, dict[str, Any]] = {}
         for system_id, bundle in system_results:
             bundle["mqtt_state"] = dict(self._mqtt_state)
-            bundles[system_id] = self._apply_mqtt_live_values_to_bundle(system_id, bundle)
+            if self.is_mqtt_system(system_id):
+                bundle = self._apply_mqtt_live_values_to_bundle(system_id, bundle)
+            bundles[system_id] = bundle
 
         return {
             "account": self._account,
@@ -531,6 +547,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
         for system_id, bundle in systems.items():
+            if not self.is_mqtt_system(system_id):
+                continue
             if not isinstance(bundle, Mapping):
                 continue
 
@@ -665,6 +683,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mqtt_client = getattr(getattr(self.config_entry, "runtime_data", None), "mqtt_client", None)
         if mqtt_client is None:
             raise HomeAssistantError("Jackery MQTT client is not available.")
+        if not self.is_mqtt_system(system_id):
+            raise HomeAssistantError(
+                "MQTT telemetry and controls are currently supported only for the "
+                "primary Jackery system of this integration entry."
+            )
 
         systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
         bundle = systems.get(system_id)
@@ -827,7 +850,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         system_id = self._resolve_system_id_from_gw_sn(gw_sn)
-        if not system_id:
+        if not system_id or not self.is_mqtt_system(system_id):
             return
 
         ac_output_value = self._extract_ac_output_state(payload, gw_sn)
@@ -875,7 +898,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         system_id = self._resolve_system_id_from_gw_sn(gw_sn)
-        if not system_id:
+        if not system_id or not self.is_mqtt_system(system_id):
             return
 
         existing = self._mqtt_live_values.get(system_id, {})
@@ -911,7 +934,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         systems = {}
         for system_id, bundle in self.data.get("systems", {}).items():
             merged_bundle = {**bundle, "mqtt_state": dict(self._mqtt_state)}
-            systems[system_id] = self._apply_mqtt_live_values_to_bundle(system_id, merged_bundle)
+            if self.is_mqtt_system(system_id):
+                merged_bundle = self._apply_mqtt_live_values_to_bundle(system_id, merged_bundle)
+            systems[system_id] = merged_bundle
         new_data["systems"] = systems
         self.data = new_data
         self.last_update_success = True
@@ -933,6 +958,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not system_id:
             _LOGGER.debug(
                 "Ignoring Jackery MQTT data_report for unknown gw_sn=%s",
+                gw_sn,
+            )
+            return
+        if not self.is_mqtt_system(system_id):
+            _LOGGER.debug(
+                "Ignoring Jackery MQTT data_report for non-primary system %s (gw_sn=%s)",
+                system_id,
                 gw_sn,
             )
             return
@@ -1518,6 +1550,48 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return the MQTT command topic for a device serial."""
         from .const import MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE
         return MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=device_sn)
+
+    def _resolve_mqtt_system(
+        self,
+        selected_system_ids: Iterable[str],
+        bundles_by_id: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[str | None, str]:
+        """Resolve the single selected system used for MQTT telemetry/controls.
+
+        The Jackery MQTT broker connection is only ever subscribed to one
+        device's topics (see JackeryMqttClient's single device_serial), so
+        MQTT-backed values and controls cannot be safely fanned out across
+        every REST-selected system in a multi-system account: a system that
+        isn't subscribed will never receive a response to its data_get/
+        data_set requests, leaving entities stuck at unknown or write
+        verification failing even when the device accepted the command.
+
+        This picks the first selected system (in configured order, matching
+        _resolve_selected_system_ids) that has a resolvable device serial,
+        and is deliberately simple/deterministic rather than persisted or
+        user-configurable. Explicit MQTT system selection is intentionally
+        out of scope here and left for a follow-up PR (see
+        CONTRIBUTING.md and the PR #4 review discussion on multi-system
+        accounts).
+        """
+        for system_id in selected_system_ids:
+            bundle = bundles_by_id.get(system_id)
+            if not isinstance(bundle, Mapping):
+                continue
+            device_sn = self._extract_system_device_sn(bundle)
+            if device_sn:
+                return system_id, device_sn
+        return None, ""
+
+    def is_mqtt_system(self, system_id: str) -> bool:
+        """Return whether MQTT telemetry/controls are enabled for this system.
+
+        Only the resolved primary system (see _resolve_mqtt_system) is ever
+        subscribed to on the Jackery MQTT broker; every other selected
+        system remains REST-only until explicit multi-system MQTT support
+        ships.
+        """
+        return self.mqtt_system_id is not None and str(system_id) == self.mqtt_system_id
 
     def _resolve_system_day_key(self, system_id: str) -> str:
         """Return the current local day key for a selected system."""
