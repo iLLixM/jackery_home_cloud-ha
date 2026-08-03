@@ -67,7 +67,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # manual reload (the MQTT client below is only ever constructed
             # once per config entry load).
             raise ConfigEntryNotReady(
-                "No eligible Jackery system was found for MQTT; will retry."
+                "MQTT is enabled, but no selected Jackery system currently exposes "
+                "a usable device serial. Setup will be retried; disable MQTT in the "
+                "integration options if the device does not support this MQTT path."
             )
 
         selected_system_count = len(coordinator.data.get("selected_system_ids", []))
