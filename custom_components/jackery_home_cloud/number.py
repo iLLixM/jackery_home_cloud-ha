@@ -54,8 +54,8 @@ async def async_setup_entry(
         if not device_sn:
             continue
         for entity_cls in (
-            JackeryChargeFloorSocNumber,
-            JackeryDischargeCeilingSocNumber,
+            JackeryDischargeLimitSocNumber,
+            JackeryChargeLimitSocNumber,
             JackeryFeedPowerLimitNumber,
         ):
             entities.append(
@@ -195,7 +195,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
             raise HomeAssistantError(f"Failed to request Jackery {self.name}: {err}") from err
 
 
-class JackeryChargeFloorSocNumber(_JackeryMqttNumberEntity):
+class JackeryDischargeLimitSocNumber(_JackeryMqttNumberEntity):
     """Minimum battery SOC below which discharging should stop. Discharge setting range according to android app is from 5% to 49%"""
 
     _attr_name = "Discharge Limit"
@@ -205,8 +205,8 @@ class JackeryChargeFloorSocNumber(_JackeryMqttNumberEntity):
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
     _meter_id = MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID
-    _bundle_key = "charge_floor_soc_mqtt"
-    _unique_id_suffix = "charge_floor_soc"
+    _bundle_key = "discharge_limit_soc_mqtt"
+    _unique_id_suffix = "discharge_limit_soc"
 
     def _raw_to_native(self, raw: float) -> int:
         """Return the SOC limit as a whole percentage."""
@@ -216,7 +216,7 @@ class JackeryChargeFloorSocNumber(_JackeryMqttNumberEntity):
         return str(int(round(value * MQTT_EMS_BATTERY_SOC_SCALE)))
 
 
-class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
+class JackeryChargeLimitSocNumber(_JackeryMqttNumberEntity):
     """Maximum battery SOC above which charging should stop. Android app allows mimimum value of 50%"""
 
     _attr_name = "Charge limit"
@@ -226,8 +226,8 @@ class JackeryDischargeCeilingSocNumber(_JackeryMqttNumberEntity):
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
     _meter_id = MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID
-    _bundle_key = "discharge_ceiling_soc_mqtt"
-    _unique_id_suffix = "discharge_ceiling_soc"
+    _bundle_key = "charge_limit_soc_mqtt"
+    _unique_id_suffix = "charge_limit_soc"
 
     def _raw_to_native(self, raw: float) -> int:
         """Return the SOC limit as a whole percentage."""

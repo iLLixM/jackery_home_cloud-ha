@@ -992,17 +992,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_EPS_LOAD_POWER_METER_ID,
         )
-        charge_floor_soc_raw = extract_ems_meter_value(
+        discharge_limit_soc_raw = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
             meter_id=MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
         )
-        discharge_ceiling_soc_raw = extract_ems_meter_value(
+        charge_limit_soc_raw = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
             meter_id=MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
         )
-        charge_power_limit = extract_ems_meter_value(
+        feed_power_limit = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
             meter_id=MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
@@ -1049,9 +1049,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and other_load_power is None
             and grid_power_raw is None
             and eps_load_power is None
-            and charge_floor_soc_raw is None
-            and discharge_ceiling_soc_raw is None
-            and charge_power_limit is None
+            and discharge_limit_soc_raw is None
+            and charge_limit_soc_raw is None
+            and feed_power_limit is None
             and standby_raw is None
             and output_power_limit_raw is None
             and auto_standby_raw is None
@@ -1318,48 +1318,48 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # The following are settings/limits, not fluctuating power readings or
         # cumulative totals: no decrease-tolerance guard applies.
-        if charge_floor_soc_raw is not None:
+        if discharge_limit_soc_raw is not None:
             updated.update(
                 {
-                    "charge_floor_soc_mqtt": charge_floor_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
-                    "charge_floor_soc_mqtt_at": dt_util.utcnow(),
+                    "discharge_limit_soc_mqtt": discharge_limit_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                    "discharge_limit_soc_mqtt_at": dt_util.utcnow(),
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT charge floor SOC for %s from meter %s: raw=%s -> %.1f%%",
+                "Accepted MQTT discharge limit SOC for %s from meter %s: raw=%s -> %.1f%%",
                 system_id,
                 MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
-                charge_floor_soc_raw,
-                charge_floor_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                discharge_limit_soc_raw,
+                discharge_limit_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
             )
 
-        if discharge_ceiling_soc_raw is not None:
+        if charge_limit_soc_raw is not None:
             updated.update(
                 {
-                    "discharge_ceiling_soc_mqtt": discharge_ceiling_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
-                    "discharge_ceiling_soc_mqtt_at": dt_util.utcnow(),
+                    "charge_limit_soc_mqtt": charge_limit_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                    "charge_limit_soc_mqtt_at": dt_util.utcnow(),
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT discharge ceiling SOC for %s from meter %s: raw=%s -> %.1f%%",
+                "Accepted MQTT charge limit SOC for %s from meter %s: raw=%s -> %.1f%%",
                 system_id,
                 MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
-                discharge_ceiling_soc_raw,
-                discharge_ceiling_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
+                charge_limit_soc_raw,
+                charge_limit_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
             )
 
-        if charge_power_limit is not None:
+        if feed_power_limit is not None:
             updated.update(
                 {
-                    "charge_power_limit_mqtt": charge_power_limit,
-                    "charge_power_limit_mqtt_at": dt_util.utcnow(),
+                    "feed_power_limit_mqtt": feed_power_limit,
+                    "feed_power_limit_mqtt_at": dt_util.utcnow(),
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT charge power limit for %s from meter %s: %s W",
+                "Accepted MQTT feed power limit for %s from meter %s: %s W",
                 system_id,
                 MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
-                charge_power_limit,
+                feed_power_limit,
             )
 
         if standby_raw is not None:
@@ -1688,7 +1688,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Settings/limits persist indefinitely once received, like
         # work_mode_raw/standby_raw above - no staleness gate, since they
         # only change when explicitly set (by the app or by this integration).
-        for key in ("charge_floor_soc_mqtt", "discharge_ceiling_soc_mqtt", "charge_power_limit_mqtt"):
+        for key in ("discharge_limit_soc_mqtt", "charge_limit_soc_mqtt", "feed_power_limit_mqtt"):
             value = _coerce_float(live.get(key))
             if value is not None:
                 merged[key] = value

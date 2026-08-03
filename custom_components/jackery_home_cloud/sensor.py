@@ -606,13 +606,13 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
 
 
 class JackeryScheduleSensor(JackeryBaseSensor):
-    """Sensor exposing the Jackery scheduled charge/discharge time windows.
+    """Sensor exposing the Jackery scheduled charge/discharge time (Time of use) windows.
 
     Experimental: reverse engineered from observed traffic rather than
     official documentation (see MQTT_EMS_CHARGE_WINDOW_METER_IDS /
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS in const.py). The schedule only
-    takes effect while the battery mode select is set to "Scheduled
-    charge/discharge". The protocol supports up to 10
+    takes effect while the work mode select is set to "Time of use".
+    The protocol supports up to 10
     charge and 10 discharge windows; rather than pre-declaring up to 40 time
     entities, individual windows are managed through this entity's
     set_charge_window / set_discharge_window / clear_charge_window /

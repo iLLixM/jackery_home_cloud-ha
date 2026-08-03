@@ -2,7 +2,7 @@ set_charge_window:
   name: Set charge window
   description: >-
     Configure one of up to 10 scheduled charge windows. Only takes effect
-    while Battery mode is set to "Scheduled charge/discharge". Experimental:
+    while work mode is set to "Time of use". Experimental:
     reverse engineered from live traffic, not officially documented.
   target:
     entity:
@@ -43,7 +43,7 @@ set_discharge_window:
   name: Set discharge window
   description: >-
     Configure one of up to 10 scheduled discharge windows. Only takes effect
-    while Battery mode is set to "Scheduled charge/discharge". Experimental:
+    while work mode is set to "Time of use". Experimental:
     reverse engineered from live traffic, not officially documented.
   target:
     entity:

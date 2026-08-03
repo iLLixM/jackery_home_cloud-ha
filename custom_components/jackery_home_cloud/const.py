@@ -120,9 +120,9 @@ MQTT_EMS_WORK_MODE_METER_ID: str = "23132161"
 MQTT_EMS_CHARGE_WINDOW_METER_IDS: tuple[str, ...] = tuple(str(23146497 + i) for i in range(10))
 MQTT_EMS_DISCHARGE_WINDOW_METER_IDS: tuple[str, ...] = tuple(str(23147521 + i) for i in range(10))
 
-# Battery SOC operating window: charge floor (do not resume charging below
-# this SOC) and discharge ceiling (do not discharge above this SOC). Both
-# are raw / 10, same scale as MQTT_EMS_BATTERY_SOC_SCALE.
+# Battery SOC operating window: discharge limit (the SOC below which
+# discharging stops) and charge limit (the SOC above which charging
+# stops). Both are raw / 10, same scale as MQTT_EMS_BATTERY_SOC_SCALE.
 # The official Android app was observed sending both SOC boundary meters in
 # the same data_set request even when only one value was changed. Direct MQTT
 # testing confirms that both meters can also be read and written independently.
