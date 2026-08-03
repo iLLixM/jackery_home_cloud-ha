@@ -266,6 +266,8 @@ Accounts containing multiple Jackery systems remain supported for REST-based dat
 
 In this initial MQTT implementation, MQTT telemetry and controls are enabled only for a single, automatically resolved primary system per config entry. Additional systems continue to use REST-based entities only; no MQTT-only entities or MQTT polling are created for them.
 
+The primary system is resolved once when the integration entry is loaded and stays frozen for the entry's lifetime, even if a later data refresh would otherwise have picked a different system. Reload or reconfigure the integration entry to re-resolve the primary system (for example, after changing which systems are selected).
+
 Explicit MQTT system selection and validated multi-system MQTT support are planned for a later release.
 
 ### MQTT TLS option

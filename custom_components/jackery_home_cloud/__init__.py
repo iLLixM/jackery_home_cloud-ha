@@ -8,6 +8,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 
@@ -58,6 +59,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.runtime_data = runtime
 
     if entry.options.get(CONF_ENABLE_MQTT):
+        if coordinator.mqtt_system_id is None or not coordinator.mqtt_device_serial:
+            # No eligible system was resolved on this first refresh (e.g. a
+            # transient API hiccup). Raising ConfigEntryNotReady lets Home
+            # Assistant's own setup retry/backoff re-attempt async_setup_entry
+            # later, instead of permanently falling back to REST-only until a
+            # manual reload (the MQTT client below is only ever constructed
+            # once per config entry load).
+            raise ConfigEntryNotReady(
+                "No eligible Jackery system was found for MQTT; will retry."
+            )
+
+        selected_system_count = len(coordinator.data.get("selected_system_ids", []))
+        if selected_system_count > 1:
+            _LOGGER.warning(
+                "Jackery account %s has %d selected systems; MQTT telemetry/controls "
+                "are limited to the primary system_id=%s (device serial=%s). Other "
+                "systems remain REST-only.",
+                entry.title,
+                selected_system_count,
+                coordinator.mqtt_system_id,
+                coordinator.mqtt_device_serial,
+            )
+
         crypto_key = str(entry.options.get(CONF_CRYPTO_KEY, "")).strip()
         try:
             mqtt_credentials = await client.async_build_mqtt_credentials(

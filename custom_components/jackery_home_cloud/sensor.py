@@ -396,6 +396,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "connection_state"),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
+        requires_mqtt=True,
     ),
     JackeryMetricDescription(
         key="mqtt_message_count",

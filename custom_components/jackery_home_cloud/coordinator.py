@@ -192,6 +192,10 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # and the PR #4 review discussion on multi-system accounts).
         self.mqtt_system_id: str | None = None
         self.mqtt_device_serial: str = ""
+        # Tracks the last (system_id, device_serial) pair we already warned
+        # about in _async_update_data(), so a persistently different
+        # resolution logs once instead of on every refresh cycle.
+        self._mqtt_system_last_warned: tuple[str | None, str] | None = None
 
     @property
     def mqtt_credentials(self) -> dict[str, Any]:
@@ -231,9 +235,33 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        self.mqtt_system_id, self.mqtt_device_serial = self._resolve_mqtt_system(
+        # The MQTT primary system is resolved once per coordinator instance
+        # (i.e. once per config entry load) and then frozen: the MQTT client
+        # in __init__.py is only ever constructed once, right after the
+        # first refresh, so re-resolving a different system on a later
+        # refresh would silently desynchronize the coordinator/entities from
+        # what the MQTT client is actually subscribed to. A changed
+        # resolution is only re-applied when the config entry is reloaded
+        # (which recreates this coordinator instance).
+        resolved_system_id, resolved_device_serial = self._resolve_mqtt_system(
             selected_system_ids, dict(system_results)
         )
+        if self.mqtt_system_id is None:
+            self.mqtt_system_id, self.mqtt_device_serial = resolved_system_id, resolved_device_serial
+        elif (resolved_system_id, resolved_device_serial) != (
+            self.mqtt_system_id,
+            self.mqtt_device_serial,
+        ) and (resolved_system_id, resolved_device_serial) != self._mqtt_system_last_warned:
+            _LOGGER.warning(
+                "Ignoring changed Jackery MQTT primary-system resolution from "
+                "system_id=%s/serial=%s to system_id=%s/serial=%s; reload the "
+                "integration entry to apply the new resolution",
+                self.mqtt_system_id,
+                self.mqtt_device_serial,
+                resolved_system_id,
+                resolved_device_serial,
+            )
+            self._mqtt_system_last_warned = (resolved_system_id, resolved_device_serial)
 
         bundles: dict[str, dict[str, Any]] = {}
         for system_id, bundle in system_results:
@@ -1903,7 +1931,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if str(system_id) in systems_by_id
             ]
 
-        return list(systems_by_id)
+        return sorted(systems_by_id)
 
 def _system_local_day_key(monitor: Mapping[str, Any]) -> str:
     """Return the current day key for the system timezone."""
