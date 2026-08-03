@@ -242,7 +242,7 @@ class JackeryChargeLimitSocNumber(_JackeryMqttNumberEntity):
 class JackeryFeedPowerLimitNumber(_JackeryMqttNumberEntity):
     """Maximum feed-in power."""
 
-    _attr_name = "Feed power limit"
+    _attr_name = "Feed-in power limit"
     _attr_icon = "mdi:current-ac"
     _attr_native_min_value = 0
     _attr_native_max_value = MQTT_EMS_FEED_POWER_LIMIT_MAX_W
