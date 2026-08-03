@@ -22,6 +22,12 @@ from .const import (
     MODEL_NAME_MAP,
     MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE,
     MQTT_EMS_AC_OUTPUT_METER_ID,
+    MQTT_EMS_AUTO_STANDBY_METER_ID,
+    MQTT_EMS_AUTO_STANDBY_RAW_OFF,
+    MQTT_EMS_AUTO_STANDBY_RAW_ON,
+    MQTT_EMS_STANDBY_METER_ID,
+    MQTT_EMS_STANDBY_RAW_OFF,
+    MQTT_EMS_STANDBY_RAW_ON,
 )
 from .coordinator import JackeryHomeCloudCoordinator
 
@@ -41,9 +47,11 @@ async def async_setup_entry(
 
     coordinator = runtime.coordinator
     systems = coordinator.data.get("systems", {}) if coordinator.data else {}
-    entities: list[JackeryAcOutputSwitch] = []
+    entities: list[JackeryAcOutputSwitch | JackeryStandbySwitch | JackeryAutoStandbySwitch] = []
 
     for system_id, bundle in systems.items():
+        if not coordinator.is_mqtt_system(system_id):
+            continue
         if not isinstance(bundle, Mapping):
             continue
         device_sn = _extract_system_device_sn(bundle)
@@ -51,6 +59,24 @@ async def async_setup_entry(
             continue
         entities.append(
             JackeryAcOutputSwitch(
+                coordinator=coordinator,
+                system_id=str(system_id),
+                bundle=bundle,
+                mqtt_client=runtime.mqtt_client,
+                device_sn=device_sn,
+            )
+        )
+        entities.append(
+            JackeryStandbySwitch(
+                coordinator=coordinator,
+                system_id=str(system_id),
+                bundle=bundle,
+                mqtt_client=runtime.mqtt_client,
+                device_sn=device_sn,
+            )
+        )
+        entities.append(
+            JackeryAutoStandbySwitch(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
@@ -178,22 +204,109 @@ class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Swit
             raise HomeAssistantError(f"Failed to request Jackery AC output state: {err}") from err
 
     async def _async_send_set(self, is_on: bool) -> None:
-        """Publish the desired AC output state via MQTT."""
+        """Publish the desired AC output state via MQTT and verify it was applied."""
         if not self._device_sn:
             raise HomeAssistantError("No Jackery device serial is available for AC output control.")
+        await self.coordinator.async_set_meter_value(
+            system_id=self._system_id,
+            meter_id=MQTT_EMS_AC_OUTPUT_METER_ID,
+            raw_value="1" if is_on else "0",
+            bundle_key="ac_output_state",
+            timestamp_key="ac_output_state_at",
+            expected_bundle_value=is_on,
+        )
+
+
+class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], SwitchEntity):
+    """MQTT-backed switch for the Jackery standby state.
+
+    Experimental: the meter mapping was reverse engineered from observed
+    traffic rather than official documentation. Verify against the Jackery
+    app before relying on it for automation. See JackeryAutoStandbySwitch
+    below for the separate "auto standby" setting.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Standby"
+    _attr_icon = "mdi:sleep"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        *,
+        coordinator: JackeryHomeCloudCoordinator,
+        system_id: str,
+        bundle: Mapping[str, Any],
+        mqtt_client: Any,
+        device_sn: str,
+    ) -> None:
+        """Initialize the standby switch."""
+        super().__init__(coordinator)
+        self._system_id = system_id
+        self._bundle = dict(bundle)
+        self._mqtt_client = mqtt_client
+        self._device_sn = str(device_sn).strip()
+        self._attr_unique_id = f"system_{system_id}_standby"
+        self._attr_device_info = _system_device_info(system_id, bundle)
+
+    async def async_added_to_hass(self) -> None:
+        """Request the initial standby state once the switch is added."""
+        await super().async_added_to_hass()
+        await self._async_request_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated coordinator data."""
+        self._bundle = dict(self._system_bundle or {})
+        super()._handle_coordinator_update()
+
+    @property
+    def available(self) -> bool:
+        """Return availability based on device serial and MQTT connectivity."""
+        return bool(self._device_sn) and super().available
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the device is currently in standby."""
+        bundle = self._system_bundle or self._bundle or {}
+        raw_value = bundle.get("standby_raw")
+        if not isinstance(raw_value, str):
+            return None
+        if raw_value == MQTT_EMS_STANDBY_RAW_ON:
+            return True
+        if raw_value == MQTT_EMS_STANDBY_RAW_OFF:
+            return False
+        return None
+
+    @property
+    def _system_bundle(self) -> dict[str, Any] | None:
+        systems = self.coordinator.data.get("systems", {}) if self.coordinator.data else {}
+        bundle = systems.get(self._system_id)
+        return bundle if isinstance(bundle, dict) else None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enter standby via MQTT."""
+        await self._async_send_set(MQTT_EMS_STANDBY_RAW_ON)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Exit standby via MQTT."""
+        await self._async_send_set(MQTT_EMS_STANDBY_RAW_OFF)
+
+    async def _async_request_state(self) -> None:
+        """Actively request the current standby state via data_get."""
+        if not self._device_sn:
+            return
         topic = MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=self._device_sn)
         timestamp_ms = str(int(time.time() * 1000))
         payload = {
-            "cmd": "data_set",
+            "cmd": "data_get",
             "gw_sn": self._device_sn,
             "timestamp": timestamp_ms,
             "info": {
                 "dev_list": [
                     {
                         "dev_sn": f"ems_{self._device_sn}",
-                        "meter_list": [
-                            [MQTT_EMS_AC_OUTPUT_METER_ID, "1" if is_on else "0"],
-                        ],
+                        "meter_list": [MQTT_EMS_STANDBY_METER_ID],
                     }
                 ]
             },
@@ -201,7 +314,143 @@ class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Swit
         try:
             await self._mqtt_client.async_publish_json(topic, payload, qos=1)
         except Exception as err:
-            raise HomeAssistantError(f"Failed to set Jackery AC output state: {err}") from err
+            if "not connected" in str(err).lower():
+                return
+            raise HomeAssistantError(f"Failed to request Jackery standby state: {err}") from err
+
+    async def _async_send_set(self, raw_value: str) -> None:
+        """Publish the desired standby state via MQTT and verify it was applied."""
+        if not self._device_sn:
+            raise HomeAssistantError("No Jackery device serial is available for standby control.")
+        await self.coordinator.async_set_meter_value(
+            system_id=self._system_id,
+            meter_id=MQTT_EMS_STANDBY_METER_ID,
+            raw_value=raw_value,
+            bundle_key="standby_raw",
+            timestamp_key="standby_raw_at",
+            expected_bundle_value=raw_value,
+            refresh_group=self.coordinator.async_request_config_live_meter_values,
+        )
+
+
+class JackeryAutoStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], SwitchEntity):
+    """MQTT-backed switch for the Jackery "auto standby" setting.
+
+    Distinct from JackeryStandbySwitch above (which enters/exits standby
+    immediately) - this toggles whether the device automatically enters
+    standby on its own.
+
+    Experimental: the meter mapping was reverse engineered from observed
+    traffic rather than official documentation. Verify against the Jackery
+    app before relying on it for automation. See MQTT_EMS_AUTO_STANDBY_METER_ID
+    in const.py for the raw value convention.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Auto standby"
+    _attr_icon = "mdi:sleep-off"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        *,
+        coordinator: JackeryHomeCloudCoordinator,
+        system_id: str,
+        bundle: Mapping[str, Any],
+        mqtt_client: Any,
+        device_sn: str,
+    ) -> None:
+        """Initialize the auto standby switch."""
+        super().__init__(coordinator)
+        self._system_id = system_id
+        self._bundle = dict(bundle)
+        self._mqtt_client = mqtt_client
+        self._device_sn = str(device_sn).strip()
+        self._attr_unique_id = f"system_{system_id}_auto_standby"
+        self._attr_device_info = _system_device_info(system_id, bundle)
+
+    async def async_added_to_hass(self) -> None:
+        """Request the initial auto standby state once the switch is added."""
+        await super().async_added_to_hass()
+        await self._async_request_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated coordinator data."""
+        self._bundle = dict(self._system_bundle or {})
+        super()._handle_coordinator_update()
+
+    @property
+    def available(self) -> bool:
+        """Return availability based on device serial and MQTT connectivity."""
+        return bool(self._device_sn) and super().available
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if auto standby is currently enabled."""
+        bundle = self._system_bundle or self._bundle or {}
+        raw_value = bundle.get("auto_standby_raw")
+        if not isinstance(raw_value, str):
+            return None
+        if raw_value == MQTT_EMS_AUTO_STANDBY_RAW_ON:
+            return True
+        if raw_value == MQTT_EMS_AUTO_STANDBY_RAW_OFF:
+            return False
+        return None
+
+    @property
+    def _system_bundle(self) -> dict[str, Any] | None:
+        systems = self.coordinator.data.get("systems", {}) if self.coordinator.data else {}
+        bundle = systems.get(self._system_id)
+        return bundle if isinstance(bundle, dict) else None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable auto standby via MQTT."""
+        await self._async_send_set(MQTT_EMS_AUTO_STANDBY_RAW_ON)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable auto standby via MQTT."""
+        await self._async_send_set(MQTT_EMS_AUTO_STANDBY_RAW_OFF)
+
+    async def _async_request_state(self) -> None:
+        """Actively request the current auto standby state via data_get."""
+        if not self._device_sn:
+            return
+        topic = MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=self._device_sn)
+        timestamp_ms = str(int(time.time() * 1000))
+        payload = {
+            "cmd": "data_get",
+            "gw_sn": self._device_sn,
+            "timestamp": timestamp_ms,
+            "info": {
+                "dev_list": [
+                    {
+                        "dev_sn": f"ems_{self._device_sn}",
+                        "meter_list": [MQTT_EMS_AUTO_STANDBY_METER_ID],
+                    }
+                ]
+            },
+        }
+        try:
+            await self._mqtt_client.async_publish_json(topic, payload, qos=1)
+        except Exception as err:
+            if "not connected" in str(err).lower():
+                return
+            raise HomeAssistantError(f"Failed to request Jackery auto standby state: {err}") from err
+
+    async def _async_send_set(self, raw_value: str) -> None:
+        """Publish the desired auto standby state via MQTT and verify it was applied."""
+        if not self._device_sn:
+            raise HomeAssistantError("No Jackery device serial is available for auto standby control.")
+        await self.coordinator.async_set_meter_value(
+            system_id=self._system_id,
+            meter_id=MQTT_EMS_AUTO_STANDBY_METER_ID,
+            raw_value=raw_value,
+            bundle_key="auto_standby_raw",
+            timestamp_key="auto_standby_raw_at",
+            expected_bundle_value=raw_value,
+            refresh_group=self.coordinator.async_request_config_live_meter_values,
+        )
 
 
 def _system_device_info(system_id: str, bundle: Mapping[str, Any]) -> DeviceInfo:

@@ -16,7 +16,11 @@
           "selected_systems": "Systems",
           "enable_mqtt": "Enable MQTT connection",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "mqtt_debug_raw": "Enable MQTT raw debug logging"
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_poll_interval": "MQTT live meter poll interval (seconds)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       },
       "reauth_confirm": {
@@ -46,7 +50,11 @@
           "selected_systems": "Systems",
           "enable_mqtt": "Enable MQTT connection",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "mqtt_debug_raw": "Enable MQTT raw debug logging"
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_poll_interval": "MQTT live meter poll interval (seconds)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       }
     },
@@ -75,7 +83,11 @@
           "selected_systems": "Systems",
           "enable_mqtt": "Enable MQTT connection",
           "mqtt_tls_insecure": "Ignore invalid / expired MQTT TLS certificates",
-          "mqtt_debug_raw": "Enable MQTT raw debug logging"
+          "mqtt_debug_raw": "Enable MQTT raw debug logging",
+          "mqtt_poll_interval": "MQTT live meter poll interval (seconds)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       }
     },

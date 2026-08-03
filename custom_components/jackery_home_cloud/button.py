@@ -42,6 +42,8 @@ async def async_setup_entry(
     entities: list[JackeryRebootButton] = []
 
     for system_id, bundle in systems.items():
+        if not coordinator.is_mqtt_system(system_id):
+            continue
         if not isinstance(bundle, Mapping):
             continue
         device_sn = _extract_system_device_sn(bundle)

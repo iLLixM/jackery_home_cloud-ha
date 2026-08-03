@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_interval
 
 from .api.auth import build_phone_uid
 from .api.client import JackeryApiClient
@@ -16,11 +19,14 @@ from .const import (
     CONF_CRYPTO_KEY,
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
+    CONF_MQTT_POLL_INTERVAL,
     CONF_MQTT_TLS_INSECURE,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
     DEFAULT_BASE_URL,
+    DEFAULT_MQTT_POLL_INTERVAL_SECONDS,
     DOMAIN,
+    MQTT_TOTALS_POLL_INTERVAL_SECONDS,
     PLATFORMS,
 )
 from .coordinator import JackeryHomeCloudCoordinator
@@ -30,7 +36,7 @@ from .mqtt_client import JackeryMqttClient
 _LOGGER = logging.getLogger(__name__)
 
 _CONFIG_ENTRY_VERSION = 1
-_CONFIG_ENTRY_MINOR_VERSION = 3
+_CONFIG_ENTRY_MINOR_VERSION = 4
 
 
 @dataclass(slots=True)
@@ -40,53 +46,6 @@ class JackeryHomeCloudRuntime:
     client: JackeryApiClient
     coordinator: JackeryHomeCloudCoordinator
     mqtt_client: JackeryMqttClient | None = None
-
-
-def _extract_main_device_serial(coordinator) -> str:
-    """Extract the main device serial used as targeted MQTT identifier."""
-    data = getattr(coordinator, "data", {}) or {}
-    systems = data.get("systems", {}) if isinstance(data, dict) else {}
-
-    for system_bundle in systems.values():
-        if not isinstance(system_bundle, dict):
-            continue
-
-        # Prefer values already normalized by coordinator/system assembly.
-        for key in ("main_device_serial", "system_no", "systemNo", "serial_number"):
-            value = system_bundle.get(key)
-            if value:
-                return str(value).strip()
-
-        system = system_bundle.get("system", {})
-        if isinstance(system, dict):
-            for key in ("systemNo", "deviceNo", "sn"):
-                value = system.get(key)
-                if value:
-                    return str(value).strip()
-
-        monitor = system_bundle.get("monitor", {})
-        if isinstance(monitor, dict):
-            energy_flow = monitor.get("energyFlowChartVO", {})
-            if isinstance(energy_flow, dict):
-                ems = energy_flow.get("emsGwVO", {})
-                if isinstance(ems, dict):
-                    value = ems.get("deviceNo") or ems.get("sn")
-                    if value:
-                        return str(value).strip()
-
-        devices = system_bundle.get("devices", {})
-        if isinstance(devices, dict):
-            for device in devices.values():
-                if not isinstance(device, dict):
-                    continue
-                product_key = str(device.get("productKey") or "").upper()
-                model_key = str(device.get("modelKey") or "").upper()
-                if "EMS" in product_key or "EMS" in model_key:
-                    value = device.get("deviceNo") or device.get("sn")
-                    if value:
-                        return str(value).strip()
-
-    return ""
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -100,6 +59,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.runtime_data = runtime
 
     if entry.options.get(CONF_ENABLE_MQTT):
+        if coordinator.mqtt_system_id is None or not coordinator.mqtt_device_serial:
+            # No eligible system was resolved on this first refresh (e.g. a
+            # transient API hiccup). Raising ConfigEntryNotReady lets Home
+            # Assistant's own setup retry/backoff re-attempt async_setup_entry
+            # later, instead of permanently falling back to REST-only until a
+            # manual reload (the MQTT client below is only ever constructed
+            # once per config entry load).
+            raise ConfigEntryNotReady(
+                "MQTT is enabled, but no selected Jackery system currently exposes "
+                "a usable device serial. Setup will be retried; disable MQTT in the "
+                "integration options if the device does not support this MQTT path."
+            )
+
+        selected_system_count = len(coordinator.data.get("selected_system_ids", []))
+        if selected_system_count > 1:
+            _LOGGER.warning(
+                "Jackery account %s has %d selected systems; MQTT telemetry/controls "
+                "are limited to the primary system_id=%s (device serial=%s). Other "
+                "systems remain REST-only.",
+                entry.title,
+                selected_system_count,
+                coordinator.mqtt_system_id,
+                coordinator.mqtt_device_serial,
+            )
+
         crypto_key = str(entry.options.get(CONF_CRYPTO_KEY, "")).strip()
         try:
             mqtt_credentials = await client.async_build_mqtt_credentials(
@@ -107,9 +91,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 coordinator.mqtt_credentials,
             )
             mqtt_tls_insecure = bool(entry.options.get(CONF_MQTT_TLS_INSECURE, False))
-            main_device_serial = _extract_main_device_serial(coordinator)
+            # coordinator.mqtt_system_id/mqtt_device_serial are resolved by
+            # _resolve_mqtt_system() during the first refresh above. Only
+            # this single system's topics are subscribed to below; every
+            # other REST-selected system in a multi-system account stays
+            # REST-only (see JackeryHomeCloudCoordinator.is_mqtt_system).
+            main_device_serial = coordinator.mqtt_device_serial
             _LOGGER.debug("Jackery MQTT TLS insecure option from config entry: %s", mqtt_tls_insecure)
-            _LOGGER.debug("Jackery main device serial selected for targeted MQTT subscriptions: %s", main_device_serial)
+            _LOGGER.debug(
+                "Jackery MQTT enabled for system_id=%s, device serial=%s (targeted subscriptions only)",
+                coordinator.mqtt_system_id,
+                main_device_serial,
+            )
             mqtt_client = JackeryMqttClient(
                 hass,
                 mqtt_credentials,
@@ -121,6 +114,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             await mqtt_client.async_start()
             runtime.mqtt_client = mqtt_client
+
+            poll_interval_seconds = int(
+                entry.options.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
+            )
+
+            async def _async_poll_fast_live_meters(_now) -> None:
+                await coordinator.async_request_fast_live_meter_values()
+
+            async def _async_poll_totals_live_meters(_now) -> None:
+                await coordinator.async_request_totals_live_meter_values()
+
+            entry.async_on_unload(
+                async_track_time_interval(
+                    hass,
+                    _async_poll_fast_live_meters,
+                    timedelta(seconds=poll_interval_seconds),
+                )
+            )
+            entry.async_on_unload(
+                async_track_time_interval(
+                    hass,
+                    _async_poll_totals_live_meters,
+                    timedelta(seconds=MQTT_TOTALS_POLL_INTERVAL_SECONDS),
+                )
+            )
         except JackeryHomeCryptoError as err:
             _LOGGER.warning(
                 "Failed to start Jackery MQTT foundation for %s because a legacy encoded credential still requires a valid integration crypto key: %s",
@@ -201,6 +219,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         changed = True
     if CONF_MQTT_DEBUG_RAW not in options:
         options[CONF_MQTT_DEBUG_RAW] = False
+        changed = True
+    if CONF_MQTT_POLL_INTERVAL not in options:
+        options[CONF_MQTT_POLL_INTERVAL] = DEFAULT_MQTT_POLL_INTERVAL_SECONDS
         changed = True
 
     if entry.minor_version < _CONFIG_ENTRY_MINOR_VERSION:

@@ -22,6 +22,7 @@ from .const import (
     CONF_CRYPTO_KEY,
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
+    CONF_MQTT_POLL_INTERVAL,
     CONF_MQTT_TLS_INSECURE,
     CONF_PASSWORD,
     CONF_PHONE_UID,
@@ -29,8 +30,11 @@ from .const import (
     DEFAULT_BASE_URL,
     DEFAULT_ENABLE_MQTT,
     DEFAULT_MQTT_DEBUG_RAW,
+    DEFAULT_MQTT_POLL_INTERVAL_SECONDS,
     DEFAULT_MQTT_TLS_INSECURE,
     DOMAIN,
+    MQTT_POLL_INTERVAL_MAX_SECONDS,
+    MQTT_POLL_INTERVAL_MIN_SECONDS,
 )
 from .exceptions import JackeryHomeApiError, JackeryHomeAuthError, JackeryHomeCryptoError
 
@@ -156,6 +160,20 @@ def _systems_mqtt_schema(
                 CONF_MQTT_DEBUG_RAW,
                 default=bool(defaults.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW)),
             ): bool,
+            vol.Optional(
+                CONF_MQTT_POLL_INTERVAL,
+                default=int(
+                    defaults.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=MQTT_POLL_INTERVAL_MIN_SECONDS,
+                    max=MQTT_POLL_INTERVAL_MAX_SECONDS,
+                    step=5,
+                    mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="s",
+                )
+            ),
         }
     )
 
@@ -193,7 +211,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the config flow for Jackery Home Cloud."""
 
     VERSION = 1
-    MINOR_VERSION = 3
+    MINOR_VERSION = 4
 
     def __init__(self) -> None:
         self._pending_entry_data: dict[str, Any] = {}
@@ -268,6 +286,9 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             crypto_key = str(self._pending_options.get(CONF_CRYPTO_KEY, "")).strip()
             mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, False))
             mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
+            mqtt_poll_interval = int(
+                user_input.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
+            )
 
             if not selected_systems:
                 errors["base"] = "no_system_selected"
@@ -294,6 +315,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ENABLE_MQTT: enable_mqtt,
                         CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
                         CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                        CONF_MQTT_POLL_INTERVAL: mqtt_poll_interval,
                     }
                 )
                 if crypto_key:
@@ -316,6 +338,9 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ENABLE_MQTT: self._pending_options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
             CONF_MQTT_DEBUG_RAW: self._pending_options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
             CONF_MQTT_TLS_INSECURE: self._pending_options.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE),
+            CONF_MQTT_POLL_INTERVAL: self._pending_options.get(
+                CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS
+            ),
         }
         return self.async_show_form(
             step_id="systems",
@@ -420,6 +445,9 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             crypto_key = str(self._pending_options.get(CONF_CRYPTO_KEY, entry.options.get(CONF_CRYPTO_KEY, ""))).strip()
             mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, False))
             mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
+            mqtt_poll_interval = int(
+                user_input.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
+            )
 
             if not selected_systems:
                 errors["base"] = "no_system_selected"
@@ -455,6 +483,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ENABLE_MQTT: enable_mqtt,
                         CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
                         CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                        CONF_MQTT_POLL_INTERVAL: mqtt_poll_interval,
                     }
                 )
                 if crypto_key:
@@ -483,6 +512,10 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_MQTT_TLS_INSECURE: self._pending_options.get(
                 CONF_MQTT_TLS_INSECURE,
                 entry.options.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE),
+            ),
+            CONF_MQTT_POLL_INTERVAL: self._pending_options.get(
+                CONF_MQTT_POLL_INTERVAL,
+                entry.options.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS),
             ),
         }
         return self.async_show_form(
@@ -546,6 +579,9 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
             crypto_key = str(self.config_entry.options.get(CONF_CRYPTO_KEY, "")).strip()
             mqtt_debug_raw = bool(user_input.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW))
             mqtt_tls_insecure = bool(user_input.get(CONF_MQTT_TLS_INSECURE, False))
+            mqtt_poll_interval = int(
+                user_input.get(CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS)
+            )
 
             if not selected:
                 errors["base"] = "no_system_selected"
@@ -567,6 +603,7 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
                         CONF_ENABLE_MQTT: enable_mqtt,
                         CONF_MQTT_TLS_INSECURE: mqtt_tls_insecure,
                         CONF_MQTT_DEBUG_RAW: mqtt_debug_raw,
+                        CONF_MQTT_POLL_INTERVAL: mqtt_poll_interval,
                     }
                 )
                 if crypto_key:
@@ -578,6 +615,9 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
             CONF_ENABLE_MQTT: self.config_entry.options.get(CONF_ENABLE_MQTT, DEFAULT_ENABLE_MQTT),
             CONF_MQTT_TLS_INSECURE: self.config_entry.options.get(CONF_MQTT_TLS_INSECURE, DEFAULT_MQTT_TLS_INSECURE),
             CONF_MQTT_DEBUG_RAW: self.config_entry.options.get(CONF_MQTT_DEBUG_RAW, DEFAULT_MQTT_DEBUG_RAW),
+            CONF_MQTT_POLL_INTERVAL: self.config_entry.options.get(
+                CONF_MQTT_POLL_INTERVAL, DEFAULT_MQTT_POLL_INTERVAL_SECONDS
+            ),
         }
 
         schema = vol.Schema(
@@ -592,6 +632,18 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
                     CONF_MQTT_DEBUG_RAW,
                     default=bool(current_options[CONF_MQTT_DEBUG_RAW]),
                 ): bool,
+                vol.Optional(
+                    CONF_MQTT_POLL_INTERVAL,
+                    default=int(current_options[CONF_MQTT_POLL_INTERVAL]),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MQTT_POLL_INTERVAL_MIN_SECONDS,
+                        max=MQTT_POLL_INTERVAL_MAX_SECONDS,
+                        step=5,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="s",
+                    )
+                ),
             }
         )
 

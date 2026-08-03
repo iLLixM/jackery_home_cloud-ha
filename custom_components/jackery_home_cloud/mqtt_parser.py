@@ -50,21 +50,25 @@ def parse_mqtt_payload(topic: str, payload: bytes) -> dict[str, Any]:
     return message
 
 
-def extract_ems_meter_value(
+def _find_ems_meter_raw_value(
     payload: Mapping[str, Any],
     *,
     device_serial: str,
     meter_id: str,
-) -> float | None:
-    """Extract a single EMS meter value from a MQTT data_report payload.
+    dev_sn_prefix: str = "ems",
+) -> str | None:
+    """Shared lookup: return a meter's exact raw string value from an MQTT payload.
 
-    The helper only evaluates MQTT payloads with cmd=data_report and the EMS
-    device node matching ``ems_<device_serial>``.
+    The helper evaluates MQTT payloads with cmd=data_report (unsolicited
+    device pushes) as well as cmd=data_get/data_set (solicited responses,
+    which the device echoes back with the requested cmd instead of
+    data_report) for the device node matching ``<dev_sn_prefix>_<device_serial>``
+    (e.g. ``ems_...`` for EMS meters, ``pcs_...`` for PCS/panel meters).
     """
     if not isinstance(payload, Mapping):
         return None
 
-    if str(payload.get("cmd") or "") != "data_report":
+    if str(payload.get("cmd") or "") not in ("data_report", "data_get", "data_set"):
         return None
 
     info = payload.get("info")
@@ -75,7 +79,7 @@ def extract_ems_meter_value(
     if not isinstance(dev_list, list):
         return None
 
-    expected_dev_sn = f"ems_{str(device_serial).strip()}"
+    expected_dev_sn = f"{dev_sn_prefix}_{str(device_serial).strip()}"
     normalized_meter_id = str(meter_id)
 
     for dev in dev_list:
@@ -94,10 +98,49 @@ def extract_ems_meter_value(
                 and len(item) >= 2
                 and str(item[0]) == normalized_meter_id
             ):
-                try:
-                    return float(item[1])
-                except (TypeError, ValueError):
-                    return None
+                return str(item[1])
         return None
 
     return None
+
+
+def extract_ems_meter_value(
+    payload: Mapping[str, Any],
+    *,
+    device_serial: str,
+    meter_id: str,
+    dev_sn_prefix: str = "ems",
+) -> float | None:
+    """Extract a single meter value from a MQTT meter payload as a float.
+
+    See _find_ems_meter_raw_value for the underlying lookup rules.
+    """
+    raw = _find_ems_meter_raw_value(
+        payload, device_serial=device_serial, meter_id=meter_id, dev_sn_prefix=dev_sn_prefix
+    )
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_ems_meter_raw_value(
+    payload: Mapping[str, Any],
+    *,
+    device_serial: str,
+    meter_id: str,
+    dev_sn_prefix: str = "ems",
+) -> str | None:
+    """Extract a meter value as its exact raw string, with no numeric conversion.
+
+    Use for meters whose value is really an opaque fixed-width code rather
+    than a quantity - e.g. the schedule window meters, where reformatting
+    through float/int is unnecessary and adds a class of edge cases (very
+    large values, non-numeric strings) that a plain string round-trip avoids
+    entirely.
+    """
+    return _find_ems_meter_raw_value(
+        payload, device_serial=device_serial, meter_id=meter_id, dev_sn_prefix=dev_sn_prefix
+    )

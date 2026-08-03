@@ -88,6 +88,7 @@ When enabled, the integration:
 - processes cyclic `data_report` messages
 - processes `data_get` and `data_set` responses
 - publishes device-control commands
+- actively polls live MQTT meters via `data_get` requests sent on every MQTT reconnect and, thereafter, on two recurring schedules, since the device does not proactively broadcast all of these values on its own: fast-changing values (AC output state, battery SOC, grid/PV/EPS/battery power) on the configurable interval (5-60 seconds, default 60 - shorter intervals increase MQTT traffic load), and cumulative energy totals (battery charged/discharged, PV1/PV2/PV total) on a fixed, slower interval. Configuration and schedule values are only requested on reconnect and immediately after a write
 
 The integration supports an option to ignore invalid or expired MQTT TLS certificates. This is currently necessary because Jackery uses its own CA (not public trusted) for its certificates.
 
@@ -173,6 +174,7 @@ The initial config flow asks for:
 - whether MQTT should be enabled
 - whether invalid or expired MQTT TLS certificates should be ignored
 - whether raw MQTT debug logging should be enabled
+- the MQTT live meter poll interval for fast-changing values (5-60 seconds, default 60; shorter intervals increase MQTT traffic load)
 
 The required `phone_uid` is generated automatically.
 
@@ -257,6 +259,16 @@ The `phone_uid` remains visible and editable in this flow so that it can be chan
 The options flow provides the same MQTT settings and ordering as the initial config flow.
 
 Disabling MQTT does not intentionally delete the stored TLS or raw-debug preferences. These settings remain available if MQTT is enabled again later.
+
+### Multiple systems
+
+Accounts containing multiple Jackery systems remain supported for REST-based data.
+
+In this initial MQTT implementation, MQTT telemetry and controls are enabled only for a single, automatically resolved primary system per config entry. Additional systems continue to use REST-based entities only; no MQTT-only entities or MQTT polling are created for them.
+
+The primary system is resolved once when the integration entry is loaded and stays frozen for the entry's lifetime, even if a later data refresh would otherwise have picked a different system. Reload or reconfigure the integration entry to re-resolve the primary system (for example, after changing which systems are selected).
+
+Explicit MQTT system selection and validated multi-system MQTT support are planned for a later release.
 
 ### MQTT TLS option
 
