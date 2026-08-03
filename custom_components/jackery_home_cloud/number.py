@@ -198,7 +198,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
 class JackeryDischargeLimitSocNumber(_JackeryMqttNumberEntity):
     """Minimum battery SOC below which discharging should stop. Discharge setting range according to android app is from 5% to 49%"""
 
-    _attr_name = "Discharge Limit"
+    _attr_name = "Discharge limit"
     _attr_icon = "mdi:battery-charging-low"
     _attr_native_min_value = 5
     _attr_native_max_value = 49
