@@ -739,6 +739,25 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             last_seen_at,
                             cutoff,
                         )
+                    if not value_matches:
+                        _LOGGER.debug(
+                            "Jackery data_set for meter %s (attempt %s/%s) did not match: "
+                            "bundle_key=%r expected=%r last_seen=%r timestamp_key=%r "
+                            "last_seen_at=%r cutoff=%r bundle_has_key=%s live_has_key=%s "
+                            "live_keys=%s",
+                            meter_id,
+                            attempt,
+                            max_attempts,
+                            bundle_key,
+                            expected_bundle_value,
+                            last_seen,
+                            timestamp_key,
+                            last_seen_at,
+                            cutoff,
+                            isinstance(current_bundle, Mapping) and bundle_key in current_bundle,
+                            timestamp_key in live,
+                            sorted(live.keys()) if isinstance(live, Mapping) else None,
+                        )
 
                 if last_seen is None and last_error is not None:
                     raise HomeAssistantError(
