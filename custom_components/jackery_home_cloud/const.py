@@ -130,7 +130,11 @@ MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID: str = "23136257"
 MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID: str = "23135233"
 
 # Max feed-in power limit, in Watts directly (not scaled, unlike the
-# SOC meters above).
+# SOC meters above). Value limited to "800" in android app.
+# That is the maximum power that may be fed into the 
+# grid - meaning, fed out of the home's electrical system.
+# A connected smart meter may be required for it to take effect correctly.
+
 MQTT_EMS_FEED_POWER_LIMIT_METER_ID: str = "23286785"
 MQTT_EMS_FEED_POWER_LIMIT_MAX_W: int = 800
 
