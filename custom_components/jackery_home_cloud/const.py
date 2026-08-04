@@ -88,20 +88,33 @@ MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 # this raw meter is signed if reading it directly elsewhere.
 MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
 
-# Not a REST-available field at all: instantaneous battery charge/discharge
-# power. Negative while discharging, positive while charging.
+# Instantaneous system battery charge/discharge power reported by the EMS.
+# This value is expected to represent the combined battery power of the
+# complete system, including additional battery packs.
+# Observed raw values use the opposite sign convention from the Home
+# Assistant entity: positive while discharging and negative while charging.
+# The coordinator therefore negates the raw value before storing it.
+# PROPERTY_MAPPING "16931841":"HB-EMS-MODEL_batteryPower"
+MQTT_EMS_BATTERY_POWER_METER_ID: str = "16931841"
+
+# Instantaneous charge/discharge power of the specific main-unit 
+# battery (bms1). Negative while discharging, positive while charging.
+# PROPERTY_MAPPING "33659905":"HB-BMS-MODEL_power"
 MQTT_BMS1_BATTERY_POWER_METER_ID: str = "33659905"
 
 # Household load power, signed like REST other_load_power itself. Do not
 # confuse with the unsigned MQTT_PCS_AC_MAIN_POWER_METER_ID above - they
 # read the same value only when grid_power is ~0.
+# PROPERTY_MAPPING "16936961":"HB-EMS-MODEL_otherLoadPower"
 MQTT_EMS_OTHER_LOAD_POWER_METER_ID: str = "16936961"
 
 # Raw value is sign-flipped relative to REST grid_power, so store as -raw.
+# PROPERTY_MAPPING "16930817":"HB-EMS-MODEL_gridPower"
 MQTT_EMS_GRID_POWER_METER_ID: str = "16930817"
 
 # Power delivered through the unit's own physical AC output sockets,
 # gated by the AC output relay (MQTT_EMS_AC_OUTPUT_METER_ID).
+# PROPERTY_MAPPING "16933889":"HB-EMS-MODEL_epsLoadPower"
 MQTT_EMS_EPS_LOAD_POWER_METER_ID: str = "16933889"
 
 # Battery priority/mode register. See MODE_OPTIONS in select.py for the
@@ -109,6 +122,7 @@ MQTT_EMS_EPS_LOAD_POWER_METER_ID: str = "16933889"
 # not itself configure the schedule, which lives in the separate
 # charge/discharge time-window table below (MQTT_EMS_CHARGE_WINDOW_METER_IDS
 # / MQTT_EMS_DISCHARGE_WINDOW_METER_IDS).
+# PROPERTY_MAPPING "23132161": "HB-EMS-MODEL_workMode"
 MQTT_EMS_WORK_MODE_METER_ID: str = "23132161"
 
 # Scheduled charge/discharge time-window table, only takes effect while

@@ -136,8 +136,21 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
     ),
     JackeryMetricDescription(
-        key="battery_power_mqtt",
+        key="battery_power",
         name="Battery power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        requires_mqtt=True,
+        # No REST equivalent exists for this at all. See
+        # MQTT_EMS_BATTERY_POWER_METER_ID in const.py for the sign
+        # convention.
+        value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="battery_power_bms1",
+        name="Battery power BMS1",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
@@ -145,7 +158,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # No REST equivalent exists for this at all. See
         # MQTT_BMS1_BATTERY_POWER_METER_ID in const.py for the sign
         # convention.
-        value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_mqtt")),
+        value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_bms1_mqtt")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
