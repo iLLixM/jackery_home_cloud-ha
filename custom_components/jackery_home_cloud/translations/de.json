@@ -1,0 +1,113 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Mit Jackery Home Cloud verbinden",
+        "description": "Gib deine Zugangsdaten für Jackery Home Cloud ein.",
+        "data": {
+          "account": "Nutzername",
+          "password": "Passwort"
+        }
+      },
+      "systems": {
+        "title": "Systeme und MQTT-Optionen auswählen",
+        "description": "Wähle aus, welche Systeme zu Home Assistant hinzugefügt werden sollen, und konfiguriere die optionalen MQTT-Verbindungseinstellungen.",
+        "data": {
+          "selected_systems": "Systeme",
+          "enable_mqtt": "MQTT-Verbindung aktivieren",
+          "mqtt_tls_insecure": "Ungültige oder abgelaufene MQTT-TLS-Zertifikate ignorieren",
+          "mqtt_debug_raw": "MQTT-Debug-Protokollierung aktivieren",
+          "mqtt_poll_interval": "Abfrageintervall für MQTT-Live-Messwerte (Sekunden)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "Legt fest, wie oft aktuelle Live-Werte für Leistung, Ladezustand und AC-Ausgang aktiv über MQTT abgefragt werden. Zulässig sind 5 bis 60 Sekunden, Standardwert ist 60. Kumulative Energiezähler verwenden einen separaten, langsameren Abfragezyklus. Kürzere Intervalle erhöhen die MQTT-Datenlast für Broker und Netzwerk."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Erneut authentifizieren",
+        "description": "Die Zugangsdaten für Jackery Home Cloud müssen aktualisiert werden.",
+        "data": {
+          "password": "Passwort",
+          "phone_uid": "Phone UID"
+        },
+        "data_description": {
+          "phone_uid": "Optional. Leer lassen, um die vorhandene Phone UID beizubehalten."
+        }
+      },
+      "reconfigure": {
+        "title": "Jackery Home Cloud neu konfigurieren",
+        "description": "Aktualisiere die Zugangsdaten und die Kennung des API-Clients. Die MQTT-Einstellungen werden im nächsten Schritt konfiguriert.",
+        "data": {
+          "account": "Nutzername",
+          "password": "Passwort",
+          "phone_uid": "Phone UID"
+        }
+      },
+      "reconfigure_systems": {
+        "title": "Systeme und MQTT-Optionen auswählen",
+        "description": "Wähle aus, welche Systeme in Home Assistant aktiviert bleiben sollen, und konfiguriere die MQTT-Verbindungseinstellungen.",
+        "data": {
+          "selected_systems": "Systeme",
+          "enable_mqtt": "MQTT-Verbindung aktivieren",
+          "mqtt_tls_insecure": "Ungültige oder abgelaufene MQTT-TLS-Zertifikate ignorieren",
+          "mqtt_debug_raw": "MQTT-Debug-Protokollierung aktivieren",
+          "mqtt_poll_interval": "Abfrageintervall für MQTT-Live-Messwerte (Sekunden)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "Legt fest, wie oft aktuelle Live-Werte für Leistung, Ladezustand und AC-Ausgang aktiv über MQTT abgefragt werden. Zulässig sind 5 bis 60 Sekunden, Standardwert ist 60. Kumulative Energiezähler verwenden einen separaten, langsameren Abfragezyklus. Kürzere Intervalle erhöhen die MQTT-Datenlast für Broker und Netzwerk."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zur Jackery-Home-Cloud-API fehlgeschlagen.",
+      "invalid_auth": "Authentifizierung fehlgeschlagen.",
+      "no_systems": "Für dieses Konto wurden keine Systeme gefunden.",
+      "no_system_selected": "Wähle mindestens ein System aus.",
+      "missing_crypto_key": "Die erkannte MQTT-Konfiguration verwendet weiterhin das ältere Verfahren mit codierten Zugangsdaten. Gib den Kryptoschlüssel der Integration an, um fortzufahren.",
+      "invalid_crypto_key": "Mit dem angegebenen Kryptoschlüssel der Integration konnten die von der Jackery-API zurückgegebenen älteren codierten MQTT-Zugangsdaten nicht entschlüsselt werden.",
+      "account_mismatch": "Das Konto kann während der Neukonfiguration nicht geändert werden.",
+      "unknown": "Ein unerwarteter Fehler ist aufgetreten. Prüfe die Home-Assistant-Protokolle."
+    },
+    "abort": {
+      "already_configured": "Dieses Jackery-Home-Cloud-Konto ist bereits konfiguriert.",
+      "reauth_successful": "Die erneute Authentifizierung war erfolgreich.",
+      "reconfigure_successful": "Die Neukonfiguration war erfolgreich."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Systeme und MQTT-Optionen",
+        "description": "Wähle aus, welche Systeme in Home Assistant aktiviert bleiben sollen, und konfiguriere optional die MQTT-Verbindungseinstellungen.",
+        "data": {
+          "selected_systems": "Systeme",
+          "enable_mqtt": "MQTT-Verbindung aktivieren",
+          "mqtt_tls_insecure": "Ungültige oder abgelaufene MQTT-TLS-Zertifikate ignorieren",
+          "mqtt_debug_raw": "MQTT-Debug-Protokollierung aktivieren",
+          "mqtt_poll_interval": "Abfrageintervall für MQTT-Live-Messwerte (Sekunden)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "Legt fest, wie oft aktuelle Live-Werte für Leistung, Ladezustand und AC-Ausgang aktiv über MQTT abgefragt werden. Zulässig sind 5 bis 60 Sekunden, Standardwert ist 60. Kumulative Energiezähler verwenden einen separaten, langsameren Abfragezyklus. Kürzere Intervalle erhöhen die MQTT-Datenlast für Broker und Netzwerk."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zur Jackery-Home-Cloud-API fehlgeschlagen.",
+      "invalid_auth": "Authentifizierung fehlgeschlagen.",
+      "no_system_selected": "Wähle mindestens ein System aus.",
+      "missing_crypto_key": "Gib den Kryptoschlüssel der Integration an, bevor du die MQTT-Grundfunktion aktivierst.",
+      "invalid_crypto_key": "Mit dem angegebenen Kryptoschlüssel der Integration konnte das von der Jackery-API zurückgegebene verschlüsselte MQTT-Passwort nicht entschlüsselt werden.",
+      "unknown": "Ein unerwarteter Fehler ist aufgetreten. Prüfe die Home-Assistant-Protokolle."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_count": {
+        "name": "Anzahl Batterien"
+      },
+      "total_battery_capacity": {
+        "name": "Gesamte Batteriekapazität"
+      }
+    }
+  }
+}
