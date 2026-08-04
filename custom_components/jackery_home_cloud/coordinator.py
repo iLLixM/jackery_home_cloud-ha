@@ -29,6 +29,7 @@ from .const import (
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_SOC_METER_ID,
     MQTT_EMS_BATTERY_SOC_SCALE,
+    MQTT_EMS_BATTERY_POWER_METER_ID,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
@@ -84,6 +85,7 @@ _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH = 0.01
 _FAST_EMS_METER_IDS: tuple[str, ...] = (
     MQTT_EMS_AC_OUTPUT_METER_ID,
     MQTT_EMS_BATTERY_SOC_METER_ID,
+    MQTT_EMS_BATTERY_POWER_METER_ID,
     MQTT_EMS_GRID_POWER_METER_ID,
     MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
     MQTT_EMS_EPS_LOAD_POWER_METER_ID,
@@ -1027,6 +1029,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_BATTERY_SOC_METER_ID,
         )
+        battery_power_ems_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_BATTERY_POWER_METER_ID,
+        )
+        # positive while discharging and negative while charging
+        # therefore negating the raw value before storing it
+        battery_power_ems = (
+            -battery_power_ems_raw
+            if battery_power_ems_raw is not None
+            else None
+        )
         pv1_power = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1050,7 +1064,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=MQTT_PCS_AC_MAIN_POWER_METER_ID,
             dev_sn_prefix="pcs",
         )
-        battery_power = extract_ems_meter_value(
+        battery_power_bms1 = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
             meter_id=MQTT_BMS1_BATTERY_POWER_METER_ID,
@@ -1120,11 +1134,12 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and pv2_energy_total is None
             and pv_energy_total is None
             and battery_soc_raw is None
+            and battery_power_ems is None
             and pv1_power is None
             and pv2_power is None
             and work_mode_raw is None
             and ac_main_power_magnitude is None
-            and battery_power is None
+            and battery_power_bms1 is None
             and other_load_power is None
             and grid_power_raw is None
             and eps_load_power is None
@@ -1281,6 +1296,23 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 battery_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
             )
 
+        if battery_power_ems is not None:
+            updated.update(
+                {
+                    "battery_power_mqtt": battery_power_ems,
+                    "battery_power_mqtt_at": dt_util.utcnow(),
+                }
+            )
+
+            _LOGGER.debug(
+                "Accepted MQTT EMS battery power for system %s from meter %s: "
+                "raw=%s W, normalized=%s W",
+                system_id,
+                MQTT_EMS_BATTERY_POWER_METER_ID,
+                battery_power_ems_raw,
+                battery_power_ems,
+            )
+
         if pv1_power is not None:
             updated.update(
                 {
@@ -1337,18 +1369,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ac_main_power_magnitude,
             )
 
-        if battery_power is not None:
+        if battery_power_bms1 is not None:
             updated.update(
                 {
-                    "battery_power_mqtt": battery_power,
-                    "battery_power_mqtt_at": dt_util.utcnow(),
+                    "battery_power_bms1_mqtt": battery_power_bms1,
+                    "battery_power_bms1_mqtt_at": dt_util.utcnow(),
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT battery power for %s from meter %s: %s W",
+                "Accepted MQTT BMS1 battery power for %s from meter %s: %s W",
                 system_id,
                 MQTT_BMS1_BATTERY_POWER_METER_ID,
-                battery_power,
+                battery_power_bms1,
             )
 
         if other_load_power is not None:
@@ -1817,6 +1849,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         for key in (
             "battery_power_mqtt",
+            "battery_power_bms1_mqtt",
             "other_load_power_mqtt",
             "grid_power_mqtt",
             "eps_load_power_mqtt",
