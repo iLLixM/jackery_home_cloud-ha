@@ -1,0 +1,113 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connexion à Jackery Home Cloud",
+        "description": "Entrez vos identifiants Jackery Home Cloud.",
+        "data": {
+          "account": "Compte",
+          "password": "Mot de passe"
+        }
+      },
+      "systems": {
+        "title": "Sélectionner les systèmes et les options MQTT",
+        "description": "Choisissez les systèmes à ajouter à Home Assistant et configurez les paramètres de connexion MQTT optionnels.",
+        "data": {
+          "selected_systems": "Systèmes",
+          "enable_mqtt": "Activer la connexion MQTT",
+          "mqtt_tls_insecure": "Ignorer les certificats TLS MQTT invalides ou expirés",
+          "mqtt_debug_raw": "Activer la journalisation de débogage brut MQTT",
+          "mqtt_poll_interval": "Intervalle d'interrogation du compteur MQTT en direct (secondes)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "Fréquence de demande active des nouvelles valeurs directes MQTT de puissance/SOC/sortie AC. Entre 5 et 60 secondes, par défaut 60. Les totaux d'énergie cumulée utilisent un cycle d'interrogation séparé et plus lent. Des intervalles plus courts augmentent la charge du trafic MQTT sur votre courtier/réseau."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Réauthentification",
+        "description": "Les identifiants Jackery Home Cloud doivent être mis à jour.",
+        "data": {
+          "password": "Mot de passe",
+          "phone_uid": "UID du téléphone"
+        },
+        "data_description": {
+          "phone_uid": "Optionnel. Laissez vide pour conserver l'UID du téléphone existant."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigurer Jackery Home Cloud",
+        "description": "Mettez à jour les identifiants et l'identifiant du client API. Les paramètres MQTT sont configurés à l'étape suivante.",
+        "data": {
+          "account": "Compte",
+          "password": "Mot de passe",
+          "phone_uid": "UID du téléphone"
+        }
+      },
+      "reconfigure_systems": {
+        "title": "Sélectionner les systèmes et les options MQTT",
+        "description": "Choisissez les systèmes qui doivent rester activés dans Home Assistant et configurez les paramètres de connexion MQTT.",
+        "data": {
+          "selected_systems": "Systèmes",
+          "enable_mqtt": "Activer la connexion MQTT",
+          "mqtt_tls_insecure": "Ignorer les certificats TLS MQTT invalides ou expirés",
+          "mqtt_debug_raw": "Activer la journalisation de débogage brut MQTT",
+          "mqtt_poll_interval": "Intervalle d'interrogation du compteur MQTT en direct (secondes)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "Fréquence de demande active des nouvelles valeurs directes MQTT de puissance/SOC/sortie AC. Entre 5 et 60 secondes, par défaut 60. Les totaux d'énergie cumulée utilisent un cycle d'interrogation séparé et plus lent. Des intervalles plus courts augmentent la charge du trafic MQTT sur votre courtier/réseau."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Échec de la connexion à l'API Jackery Home Cloud.",
+      "invalid_auth": "L'authentification a échoué.",
+      "no_systems": "Aucun système n'a été trouvé pour ce compte.",
+      "no_system_selected": "Sélectionnez au moins un système.",
+      "missing_crypto_key": "La configuration MQTT découverte utilise encore l'ancien flux d'identifiants encodés. Fournissez la clé cryptographique de l'intégration pour continuer.",
+      "invalid_crypto_key": "La clé cryptographique d'intégration fournie n'a pas pu décoder l'identifiant MQTT encodé hérité renvoyé par l'API Jackery.",
+      "account_mismatch": "Le compte ne peut pas être modifié lors de la reconfiguration.",
+      "unknown": "Une erreur inattendue s'est produite. Consultez les journaux de Home Assistant."
+    },
+    "abort": {
+      "already_configured": "Ce compte Jackery Home Cloud est déjà configuré.",
+      "reauth_successful": "La réauthentification a réussi.",
+      "reconfigure_successful": "La reconfiguration a réussi."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Systèmes et options MQTT",
+        "description": "Choisissez les systèmes qui doivent rester activés dans Home Assistant et configurez de manière optionnelle les paramètres de connexion MQTT.",
+        "data": {
+          "selected_systems": "Systèmes",
+          "enable_mqtt": "Activer la connexion MQTT",
+          "mqtt_tls_insecure": "Ignorer les certificats TLS MQTT invalides ou expirés",
+          "mqtt_debug_raw": "Activer la journalisation de débogage brut MQTT",
+          "mqtt_poll_interval": "Intervalle d'interrogation du compteur MQTT en direct (secondes)"
+        },
+        "data_description": {
+          "mqtt_poll_interval": "Fréquence de demande active des nouvelles valeurs directes MQTT de puissance/SOC/sortie AC. Entre 5 et 60 secondes, par défaut 60. Les totaux d'énergie cumulée utilisent un cycle d'interrogation séparé et plus lent. Des intervalles plus courts augmentent la charge du trafic MQTT sur votre courtier/réseau."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Échec de la connexion à l'API Jackery Home Cloud.",
+      "invalid_auth": "L'authentification a échoué.",
+      "no_system_selected": "Sélectionnez au moins un système.",
+      "missing_crypto_key": "Fournissez la clé cryptographique de l'intégration avant d'activer la base MQTT.",
+      "invalid_crypto_key": "La clé cryptographique d'intégration fournie n'a pas pu décrypter le mot de passe MQTT chiffré renvoyé par l'API Jackery.",
+      "unknown": "Une erreur inattendue s'est produite. Consultez les journaux de Home Assistant."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_count": {
+        "name": "Nombre de batteries"
+      },
+      "total_battery_capacity": {
+        "name": "Capacité totale de la batterie"
+      }
+    }
+  }
+}
