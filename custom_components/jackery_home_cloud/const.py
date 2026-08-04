@@ -109,6 +109,8 @@ MQTT_BMS1_BATTERY_POWER_METER_ID: str = "33659905"
 MQTT_EMS_OTHER_LOAD_POWER_METER_ID: str = "16936961"
 
 # Raw value is sign-flipped relative to REST grid_power, so store as -raw.
+# Negative while "Power fed into the grid"; positive while "Power drawn from the grid"
+# may require a connected smart meter to show appropriate values
 # PROPERTY_MAPPING "16930817":"HB-EMS-MODEL_gridPower"
 MQTT_EMS_GRID_POWER_METER_ID: str = "16930817"
 

@@ -87,6 +87,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:transmission-tower-import",
         # Prefers the MQTT-sourced value (sign flipped, see
         # MQTT_EMS_GRID_POWER_METER_ID in const.py) when fresh, falling back
         # to REST.
@@ -182,6 +183,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:solar-power",
         # Prefers the MQTT-sourced value (PV1 + PV2 meters summed, see
         # MQTT_PCS_PV1_POWER_METER_ID / MQTT_PCS_PV2_POWER_METER_ID in
         # const.py) when fresh, falling back to REST.
@@ -197,10 +199,11 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="eps_load_power",
-        name="EPS load power",
+        name="AC-socket power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:power-plug",
         # Prefers the MQTT-sourced value (see
         # MQTT_EMS_EPS_LOAD_POWER_METER_ID in const.py) when fresh, falling
         # back to REST.
@@ -216,10 +219,11 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="other_load_power",
-        name="Other load power",
+        name="Home-supply power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:home-import-outline",
         # Prefers the MQTT-sourced value (see
         # MQTT_EMS_OTHER_LOAD_POWER_METER_ID in const.py) when fresh,
         # falling back to REST. This is the true household load meter - do
