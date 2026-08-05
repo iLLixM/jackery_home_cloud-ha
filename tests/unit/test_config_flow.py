@@ -42,6 +42,7 @@ from custom_components.jackery_home_cloud.const import (
     CONF_ACCOUNT,
     CONF_CRYPTO_KEY,
     CONF_ENABLE_MQTT,
+    CONF_MQTT_SYSTEM_ID,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -51,6 +52,12 @@ from custom_components.jackery_home_cloud.crypto_utils import encrypt_text
 
 VALID_KEY = "0123456789abcdef"
 WRONG_KEY = "fedcba9876543210"
+
+_THREE_SYSTEMS = [
+    {"id": "1", "systemId": "1", "name": "A", "systemNo": "SN1"},
+    {"id": "2", "systemId": "2", "name": "B", "systemNo": "SN2"},
+    {"id": "3", "systemId": "3", "name": "C", "systemNo": "SN3"},
+]
 
 
 class _FakeResponse:
@@ -144,6 +151,7 @@ class TestUserStep:
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["data"][CONF_ACCOUNT] == "user@example.com"
+        assert result["options"][CONF_MQTT_SYSTEM_ID] is None
 
     async def test_invalid_credentials_shows_error(self, hass, monkeypatch):
         routes = _default_routes()
@@ -228,6 +236,69 @@ class TestSystemsStep:
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["options"][CONF_ENABLE_MQTT] is True
+        assert result["options"][CONF_MQTT_SYSTEM_ID] == "1"
+
+
+class TestMqttSystemStep:
+    async def test_two_selected_systems_with_mqtt_enabled_shows_mqtt_system_step(self, hass, monkeypatch):
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw"}
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "mqtt_system"
+
+    async def test_mqtt_system_dropdown_is_restricted_to_selected_systems(self, hass, monkeypatch):
+        """The 3rd discovered system wasn't selected in the previous step,
+        so it must not be offered as an MQTT system candidate."""
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw"}
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        select_selector = result["data_schema"].schema[CONF_MQTT_SYSTEM_ID]
+        offered_ids = {option["value"] for option in select_selector.config["options"]}
+        assert offered_ids == {"1", "2"}
+
+    async def test_two_selected_systems_with_mqtt_disabled_skips_mqtt_system_step(self, hass, monkeypatch):
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw"}
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: False}
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert result["options"][CONF_MQTT_SYSTEM_ID] is None
+
+    async def test_submitting_mqtt_system_step_creates_entry_with_chosen_system(self, hass, monkeypatch):
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["step_id"] == "mqtt_system"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_MQTT_SYSTEM_ID: "2"}
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert result["options"][CONF_MQTT_SYSTEM_ID] == "2"
+        assert result["options"][CONF_SELECTED_SYSTEMS] == ["1", "2"]
 
 
 class TestReauthConfirm:
@@ -297,6 +368,12 @@ class TestReconfigure:
         assert result["reason"] == "reconfigure_successful"
         assert entry.data[CONF_PASSWORD] == "new-pw"
         assert entry.options[CONF_SELECTED_SYSTEMS] == ["1"]
+        # MQTT disabled, so the reconfigure step itself doesn't touch
+        # CONF_MQTT_SYSTEM_ID - but async_reload() (triggered by this same
+        # reconfigure) re-runs migration on this pre-existing entry, which
+        # seeds it from the first selected system regardless of the MQTT
+        # toggle (see async_migrate_entry).
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "1"
 
     async def test_reconfigure_systems_missing_crypto_key(self, hass, monkeypatch):
         entry = await self._existing_entry(hass)  # no stored crypto_key
@@ -330,6 +407,81 @@ class TestReconfigure:
         assert result["errors"] == {"base": "invalid_crypto_key"}
 
 
+class TestReconfigureMqttSystem:
+    async def _existing_entry(self, hass, *, options=None) -> MockConfigEntry:
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id="user@example.com",
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "old-pw", CONF_PHONE_UID: "ha-1"},
+            options=options or {},
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    async def _reach_reconfigure_systems(self, hass, entry, monkeypatch):
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+        result = await entry.start_reconfigure_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw"}
+        )
+        assert result["step_id"] == "reconfigure_systems"
+        return result
+
+    async def test_two_selected_systems_with_mqtt_enabled_shows_step(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass)
+        result = await self._reach_reconfigure_systems(hass, entry, monkeypatch)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "reconfigure_mqtt_system"
+
+    async def test_default_preselects_previously_configured_system_when_still_selected(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass, options={CONF_MQTT_SYSTEM_ID: "2"})
+        result = await self._reach_reconfigure_systems(hass, entry, monkeypatch)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["data_schema"]({})[CONF_MQTT_SYSTEM_ID] == "2"
+
+    async def test_default_falls_back_to_first_selected_when_previous_system_deselected(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass, options={CONF_MQTT_SYSTEM_ID: "3"})
+        result = await self._reach_reconfigure_systems(hass, entry, monkeypatch)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["data_schema"]({})[CONF_MQTT_SYSTEM_ID] == "1"
+
+    async def test_submitting_reconfigure_mqtt_system_step_updates_entry(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass, options={CONF_MQTT_SYSTEM_ID: "1"})
+        result = await self._reach_reconfigure_systems(hass, entry, monkeypatch)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["step_id"] == "reconfigure_mqtt_system"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_MQTT_SYSTEM_ID: "2"}
+        )
+        assert result["type"] is FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "2"
+
+    async def test_mqtt_disabled_preserves_previously_configured_system(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass, options={CONF_MQTT_SYSTEM_ID: "2"})
+        result = await self._reach_reconfigure_systems(hass, entry, monkeypatch)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: False}
+        )
+        assert result["type"] is FlowResultType.ABORT
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "2"
+
+
 class TestOptionsFlow:
     async def _existing_entry(self, hass, *, options=None) -> MockConfigEntry:
         entry = MockConfigEntry(
@@ -351,6 +503,7 @@ class TestOptionsFlow:
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["data"][CONF_SELECTED_SYSTEMS] == ["1"]
+        assert result["data"].get(CONF_MQTT_SYSTEM_ID) is None
 
     async def test_missing_crypto_key(self, hass, monkeypatch):
         entry = await self._existing_entry(hass)  # no stored crypto_key
@@ -376,3 +529,63 @@ class TestOptionsFlow:
         )
         assert result["type"] is FlowResultType.FORM
         assert result["errors"] == {"base": "invalid_crypto_key"}
+
+
+class TestOptionsFlowMqttSystem:
+    async def _existing_entry(self, hass, *, options=None) -> MockConfigEntry:
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            unique_id="user@example.com",
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options=options or {CONF_SELECTED_SYSTEMS: ["1"], CONF_ENABLE_MQTT: False},
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    async def test_two_selected_systems_with_mqtt_enabled_shows_step(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass)
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "mqtt_system"
+
+    async def test_default_falls_back_to_first_selected_when_previous_system_deselected(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass, options={CONF_SELECTED_SYSTEMS: ["1", "3"], CONF_MQTT_SYSTEM_ID: "3"})
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["data_schema"]({})[CONF_MQTT_SYSTEM_ID] == "1"
+
+    async def test_submitting_mqtt_system_step_updates_entry(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass)
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: True}
+        )
+        assert result["step_id"] == "mqtt_system"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_MQTT_SYSTEM_ID: "2"}
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_MQTT_SYSTEM_ID] == "2"
+
+    async def test_mqtt_disabled_preserves_previously_configured_system(self, hass, monkeypatch):
+        entry = await self._existing_entry(hass, options={CONF_SELECTED_SYSTEMS: ["1"], CONF_MQTT_SYSTEM_ID: "1"})
+        _patch_session(monkeypatch, _default_routes(systems=_THREE_SYSTEMS))
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_ENABLE_MQTT: False}
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_MQTT_SYSTEM_ID] == "1"

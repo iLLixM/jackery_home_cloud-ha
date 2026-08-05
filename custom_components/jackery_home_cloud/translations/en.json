@@ -23,6 +23,16 @@
           "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
       },
+      "mqtt_system": {
+        "title": "Select the MQTT system",
+        "description": "Multiple systems were identified in the Jackery account. Choose which one should receive MQTT telemetry and controls; the other selected systems remain REST-only.",
+        "data": {
+          "mqtt_system_id": "MQTT system"
+        },
+        "data_description": {
+          "mqtt_system_id": "Currently, only one system can be connected to the Jackery MQTT broker."
+        }
+      },
       "reauth_confirm": {
         "title": "Re-authenticate",
         "description": "The Jackery Home Cloud credentials need to be updated.",
@@ -56,6 +66,16 @@
         "data_description": {
           "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
         }
+      },
+      "reconfigure_mqtt_system": {
+        "title": "Select the MQTT system",
+        "description": "Multiple systems were identified in the Jackery account. Choose which one should receive MQTT telemetry and controls; the other selected systems remain REST-only.",
+        "data": {
+          "mqtt_system_id": "MQTT system"
+        },
+        "data_description": {
+          "mqtt_system_id": "Currently, only one system can be connected to the Jackery MQTT broker."
+        }
       }
     },
     "error": {
@@ -88,6 +108,16 @@
         },
         "data_description": {
           "mqtt_poll_interval": "How often to actively request fresh live MQTT power/SOC/AC-output values. Between 5 and 60 seconds, default 60. Cumulative energy totals use a separate, slower poll cycle. Shorter intervals increase MQTT traffic load on your broker/network."
+        }
+      },
+      "mqtt_system": {
+        "title": "Select the MQTT system",
+        "description": "Multiple systems were identified in the Jackery account. Choose which one should receive MQTT telemetry and controls; the other selected systems remain REST-only.",
+        "data": {
+          "mqtt_system_id": "MQTT system"
+        },
+        "data_description": {
+          "mqtt_system_id": "Currently, only one system can be connected to the Jackery MQTT broker."
         }
       }
     },

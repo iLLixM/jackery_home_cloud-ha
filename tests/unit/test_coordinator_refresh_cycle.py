@@ -1,15 +1,19 @@
 """Tests for JackeryHomeCloudCoordinator's real `_async_update_data` cycle,
-driven through `hass`/`MockConfigEntry` and a fully mocked JackeryApiClient
-(backlog discussion #6, item 17, "Multi-system safeguard" section):
+driven through `hass`/`MockConfigEntry` and a fully mocked JackeryApiClient.
 
-    the primary system is frozen during runtime, changed REST ordering
-    does not switch it
+Covers two related properties:
 
-tests/unit/test_coordinator_mqtt_system_selection.py already proves this
-for `_resolve_mqtt_system` in isolation (a pure function); this file
-proves the same property through the real multi-poll refresh cycle - the
-only place the freeze itself (`if self.mqtt_system_id is None: ...`)
-actually lives.
+- (discussion #6, item 17, "Multi-system safeguard" section) the resolved
+  MQTT system is frozen during runtime, changed REST ordering does not
+  switch it. tests/unit/test_coordinator_mqtt_system_selection.py already
+  proves this for `_resolve_mqtt_system` in isolation (a pure function);
+  this file proves the same property through the real multi-poll refresh
+  cycle - the only place the freeze itself
+  (`if self.mqtt_system_id is None: ...`) actually lives.
+- (discussion #6, item 1, "Explicit selection of the MQTT-enabled system")
+  which system is even a candidate is now driven by CONF_MQTT_SYSTEM_ID in
+  the config entry's options, not inferred - every test below that needs
+  an actual resolution passes it explicitly via `_make_coordinator`.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from unittest.mock import AsyncMock
 from custom_components.jackery_home_cloud.api.client import JackeryApiClient
 from custom_components.jackery_home_cloud.const import (
     CONF_ACCOUNT,
+    CONF_MQTT_SYSTEM_ID,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     DOMAIN,
@@ -60,11 +65,14 @@ def _make_client(systems_sequence: list[list[dict]]) -> AsyncMock:
     return client
 
 
-async def _make_coordinator(hass, client) -> JackeryHomeCloudCoordinator:
+async def _make_coordinator(hass, client, *, mqtt_system_id: str | None = None) -> JackeryHomeCloudCoordinator:
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
-        options={},  # no explicit selection -> falls back to sorted(all systems)
+        # No CONF_SELECTED_SYSTEMS -> falls back to sorted(all systems) for
+        # REST selection. CONF_MQTT_SYSTEM_ID is the only thing that decides
+        # MQTT candidacy now (discussion #6, item 1).
+        options={CONF_MQTT_SYSTEM_ID: mqtt_system_id},
     )
     entry.add_to_hass(hass)
     coordinator = JackeryHomeCloudCoordinator(hass, entry, client)
@@ -72,10 +80,10 @@ async def _make_coordinator(hass, client) -> JackeryHomeCloudCoordinator:
     return coordinator
 
 
-class TestPrimarySystemFreezeAcrossPolls:
-    async def test_first_refresh_freezes_on_first_system_with_resolvable_serial(self, hass):
+class TestMqttSystemFreezeAcrossPolls:
+    async def test_first_refresh_resolves_the_configured_system(self, hass):
         client = _make_client([[_system(SYSTEM_A, "SN-A"), _system(SYSTEM_B, "SN-B")]])
-        coordinator = await _make_coordinator(hass, client)
+        coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
 
         await coordinator.async_refresh()
 
@@ -83,32 +91,40 @@ class TestPrimarySystemFreezeAcrossPolls:
         assert coordinator.mqtt_system_id == SYSTEM_A
         assert coordinator.mqtt_device_serial == "SN-A"
 
-    async def test_changed_rest_ordering_on_later_poll_does_not_switch_primary(self, hass):
+    async def test_configured_system_not_in_selected_set_stays_unresolved(self, hass):
+        """A configured id that isn't (or is no longer) among this cycle's
+        selected systems - e.g. dropped by the account - resolves to no
+        MQTT system at all, rather than falling back to a different one."""
+        client = _make_client([[_system(SYSTEM_A, "SN-A"), _system(SYSTEM_B, "SN-B")]])
+        coordinator = await _make_coordinator(hass, client, mqtt_system_id="sys-missing")
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is True
+        assert coordinator.mqtt_system_id is None
+        assert coordinator.mqtt_device_serial == ""
+
+    async def test_changed_rest_ordering_on_later_poll_does_not_switch_system(self, hass):
         client = _make_client(
             [
                 [_system(SYSTEM_A, "SN-A"), _system(SYSTEM_B, "SN-B")],
                 [_system(SYSTEM_B, "SN-B"), _system(SYSTEM_A, "SN-A")],  # order flipped
             ]
         )
-        coordinator = await _make_coordinator(hass, client)
+        coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
 
         await coordinator.async_refresh()
         assert coordinator.mqtt_system_id == SYSTEM_A
 
         await coordinator.async_refresh()
-        # _resolve_selected_system_ids falls back to sorted(systems_by_id),
-        # so selection order is unaffected by REST list order anyway - the
-        # real regression risk is a *different* system resolving first
-        # (see next test), but this pins that reordering the raw REST
-        # response alone changes nothing.
         assert coordinator.mqtt_system_id == SYSTEM_A
         assert coordinator.mqtt_device_serial == "SN-A"
 
-    async def test_primary_system_losing_its_serial_on_a_later_poll_stays_frozen(self, hass):
-        """Documents the current (possibly surprising) behavior: once
-        frozen, mqtt_system_id is never re-resolved even if system A can
-        no longer be resolved and B now could - only a fresh coordinator
-        instance (i.e. a config entry reload) re-resolves.
+    async def test_configured_system_losing_its_serial_on_a_later_poll_stays_frozen(self, hass):
+        """Once frozen, mqtt_system_id/mqtt_device_serial are never
+        re-resolved even if the configured system can no longer be
+        resolved on a later poll - only a fresh coordinator instance (i.e.
+        a config entry reload) re-resolves.
         """
         client = _make_client(
             [
@@ -116,7 +132,7 @@ class TestPrimarySystemFreezeAcrossPolls:
                 [{"id": SYSTEM_A, "systemId": SYSTEM_A, "name": "System 1"}, _system(SYSTEM_B, "SN-B")],
             ]
         )
-        coordinator = await _make_coordinator(hass, client)
+        coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
 
         await coordinator.async_refresh()
         assert coordinator.mqtt_system_id == SYSTEM_A
@@ -126,19 +142,24 @@ class TestPrimarySystemFreezeAcrossPolls:
         assert coordinator.mqtt_device_serial == "SN-A"
 
     async def test_warning_is_only_recorded_once_for_a_persistently_different_resolution(self, hass):
+        """When the configured system stops resolving a serial on a later
+        poll, the frozen value is kept (previous test) but the divergent
+        *would-be* resolution - now always (None, "") since only the
+        configured system is ever a candidate - is logged once, not on
+        every poll."""
         client = _make_client(
             [
                 [_system(SYSTEM_A, "SN-A"), _system(SYSTEM_B, "SN-B")],
                 [{"id": SYSTEM_A, "systemId": SYSTEM_A, "name": "System 1"}, _system(SYSTEM_B, "SN-B")],
             ]
         )
-        coordinator = await _make_coordinator(hass, client)
+        coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
         await coordinator.async_refresh()
         assert coordinator._mqtt_system_last_warned is None
 
         await coordinator.async_refresh()
         first_warned = coordinator._mqtt_system_last_warned
-        assert first_warned == (SYSTEM_B, "SN-B")
+        assert first_warned == (None, "")
 
         await coordinator.async_refresh()
         # Same divergent resolution again - _mqtt_system_last_warned must

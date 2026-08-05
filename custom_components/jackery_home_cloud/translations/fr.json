@@ -23,6 +23,16 @@
           "mqtt_poll_interval": "Fréquence de demande active des nouvelles valeurs directes MQTT de puissance/SOC/sortie AC. Entre 5 et 60 secondes, par défaut 60. Les totaux d'énergie cumulée utilisent un cycle d'interrogation séparé et plus lent. Des intervalles plus courts augmentent la charge du trafic MQTT sur votre courtier/réseau."
         }
       },
+      "mqtt_system": {
+        "title": "Sélectionner le système MQTT",
+        "description": "Plusieurs systèmes sont sélectionnés. Choisissez celui qui doit recevoir la télémétrie et les commandes MQTT ; les autres systèmes sélectionnés resteront en REST uniquement.",
+        "data": {
+          "mqtt_system_id": "Système MQTT"
+        },
+        "data_description": {
+          "mqtt_system_id": "Un seul système peut être connecté au courtier MQTT Jackery à la fois."
+        }
+      },
       "reauth_confirm": {
         "title": "Réauthentification",
         "description": "Les identifiants Jackery Home Cloud doivent être mis à jour.",
@@ -56,6 +66,16 @@
         "data_description": {
           "mqtt_poll_interval": "Fréquence de demande active des nouvelles valeurs directes MQTT de puissance/SOC/sortie AC. Entre 5 et 60 secondes, par défaut 60. Les totaux d'énergie cumulée utilisent un cycle d'interrogation séparé et plus lent. Des intervalles plus courts augmentent la charge du trafic MQTT sur votre courtier/réseau."
         }
+      },
+      "reconfigure_mqtt_system": {
+        "title": "Sélectionner le système MQTT",
+        "description": "Plusieurs systèmes sont sélectionnés. Choisissez celui qui doit recevoir la télémétrie et les commandes MQTT ; les autres systèmes sélectionnés resteront en REST uniquement.",
+        "data": {
+          "mqtt_system_id": "Système MQTT"
+        },
+        "data_description": {
+          "mqtt_system_id": "Un seul système peut être connecté au courtier MQTT Jackery à la fois."
+        }
       }
     },
     "error": {
@@ -88,6 +108,16 @@
         },
         "data_description": {
           "mqtt_poll_interval": "Fréquence de demande active des nouvelles valeurs directes MQTT de puissance/SOC/sortie AC. Entre 5 et 60 secondes, par défaut 60. Les totaux d'énergie cumulée utilisent un cycle d'interrogation séparé et plus lent. Des intervalles plus courts augmentent la charge du trafic MQTT sur votre courtier/réseau."
+        }
+      },
+      "mqtt_system": {
+        "title": "Sélectionner le système MQTT",
+        "description": "Plusieurs systèmes sont sélectionnés. Choisissez celui qui doit recevoir la télémétrie et les commandes MQTT ; les autres systèmes sélectionnés resteront en REST uniquement.",
+        "data": {
+          "mqtt_system_id": "Système MQTT"
+        },
+        "data_description": {
+          "mqtt_system_id": "Un seul système peut être connecté au courtier MQTT Jackery à la fois."
         }
       }
     },

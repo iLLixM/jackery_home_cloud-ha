@@ -28,6 +28,7 @@ from custom_components.jackery_home_cloud.const import (
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
+    CONF_MQTT_SYSTEM_ID,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -84,9 +85,9 @@ def _entry(*, options: dict | None = None) -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
         data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
-        options=options or {CONF_ENABLE_MQTT: False},
+        options=options or {CONF_ENABLE_MQTT: False, CONF_MQTT_SYSTEM_ID: None},
         version=1,
-        minor_version=4,
+        minor_version=5,
     )
 
 
@@ -281,6 +282,9 @@ class TestAsyncMigrateEntry:
 
         assert CONF_SELECTED_SYSTEMS not in entry.data
         assert entry.options[CONF_SELECTED_SYSTEMS] == ["1", "2"]
+        # No CONF_MQTT_SYSTEM_ID stored yet -> defaults to the first system
+        # in the now-migrated selection (see async_migrate_entry).
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "1"
 
     async def test_missing_option_defaults_are_filled_in(self, hass):
         entry = MockConfigEntry(
@@ -298,6 +302,37 @@ class TestAsyncMigrateEntry:
         assert entry.options[CONF_CRYPTO_KEY] == ""
         assert entry.options[CONF_MQTT_DEBUG_RAW] is False
         assert CONF_MQTT_POLL_INTERVAL in entry.options
+        # No CONF_SELECTED_SYSTEMS at all -> nothing to default the MQTT
+        # system to.
+        assert entry.options[CONF_MQTT_SYSTEM_ID] is None
+
+    async def test_seeds_mqtt_system_id_from_first_selected_system(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options={CONF_SELECTED_SYSTEMS: ["2", "1"]},
+            version=1,
+            minor_version=4,
+        )
+        entry.add_to_hass(hass)
+
+        await integration.async_migrate_entry(hass, entry)
+
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "2"
+
+    async def test_leaves_existing_mqtt_system_id_untouched(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options={CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_MQTT_SYSTEM_ID: "2"},
+            version=1,
+            minor_version=4,
+        )
+        entry.add_to_hass(hass)
+
+        await integration.async_migrate_entry(hass, entry)
+
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "2"
 
     async def test_already_fully_migrated_entry_is_left_unchanged(self, hass, monkeypatch):
         entry = MockConfigEntry(
@@ -308,9 +343,10 @@ class TestAsyncMigrateEntry:
                 CONF_CRYPTO_KEY: "",
                 CONF_MQTT_DEBUG_RAW: False,
                 CONF_MQTT_POLL_INTERVAL: 60,
+                CONF_MQTT_SYSTEM_ID: None,
             },
             version=1,
-            minor_version=4,
+            minor_version=5,
         )
         entry.add_to_hass(hass)
         update = AsyncMock()

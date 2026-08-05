@@ -20,6 +20,7 @@ from .const import (
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
+    CONF_MQTT_SYSTEM_ID,
     CONF_MQTT_TLS_INSECURE,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -36,7 +37,7 @@ from .mqtt_client import JackeryMqttClient
 _LOGGER = logging.getLogger(__name__)
 
 _CONFIG_ENTRY_VERSION = 1
-_CONFIG_ENTRY_MINOR_VERSION = 4
+_CONFIG_ENTRY_MINOR_VERSION = 5
 
 
 @dataclass(slots=True)
@@ -67,16 +68,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # manual reload (the MQTT client below is only ever constructed
             # once per config entry load).
             raise ConfigEntryNotReady(
-                "MQTT is enabled, but no selected Jackery system currently exposes "
-                "a usable device serial. Setup will be retried; disable MQTT in the "
-                "integration options if the device does not support this MQTT path."
+                "MQTT is enabled, but the configured MQTT system (or none has been "
+                "configured yet) does not currently expose a usable device serial. "
+                "Setup will be retried; use Reconfigure to select or change the MQTT "
+                "system, or disable MQTT if this device does not support this MQTT path."
             )
 
         selected_system_count = len(coordinator.data.get("selected_system_ids", []))
         if selected_system_count > 1:
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Jackery account %s has %d selected systems; MQTT telemetry/controls "
-                "are limited to the primary system_id=%s (device serial=%s). Other "
+                "are limited to the configured system_id=%s (device serial=%s). Other "
                 "systems remain REST-only.",
                 entry.title,
                 selected_system_count,
@@ -222,6 +224,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         changed = True
     if CONF_MQTT_POLL_INTERVAL not in options:
         options[CONF_MQTT_POLL_INTERVAL] = DEFAULT_MQTT_POLL_INTERVAL_SECONDS
+        changed = True
+    if CONF_MQTT_SYSTEM_ID not in options:
+        # Best-effort default for existing entries: mirrors the old implicit
+        # heuristic's most common outcome (first configured system) without
+        # needing live API data at migration time. Safe even if that system
+        # later proves unresolvable - falls through to the existing
+        # ConfigEntryNotReady retry path, same as today. Users can change
+        # this via Reconfigure at any time.
+        selected = options.get(CONF_SELECTED_SYSTEMS) or []
+        options[CONF_MQTT_SYSTEM_ID] = str(selected[0]) if selected else None
         changed = True
 
     if entry.minor_version < _CONFIG_ENTRY_MINOR_VERSION:

@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from .api.client import JackeryApiClient
 from .const import (
     CONF_ACCOUNT,
+    CONF_MQTT_SYSTEM_ID,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -188,10 +189,10 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # (see JackeryMqttClient, which is initialized with a single device
         # serial). These track which selected system that is, so MQTT
         # telemetry/controls/polling can be limited to it instead of being
-        # silently applied to every REST-selected system. See
-        # _resolve_mqtt_system() and is_mqtt_system(). Explicit user-facing
-        # MQTT system selection is a planned follow-up (see CONTRIBUTING.md
-        # and the PR #4 review discussion on multi-system accounts).
+        # silently applied to every REST-selected system. The system itself
+        # is an explicit user choice (CONF_MQTT_SYSTEM_ID, set via the
+        # config/reconfigure flow) - see _resolve_mqtt_system() and
+        # is_mqtt_system().
         self.mqtt_system_id: str | None = None
         self.mqtt_device_serial: str = ""
         # Tracks the last (system_id, device_serial) pair we already warned
@@ -237,14 +238,20 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        # The MQTT primary system is resolved once per coordinator instance
-        # (i.e. once per config entry load) and then frozen: the MQTT client
-        # in __init__.py is only ever constructed once, right after the
-        # first refresh, so re-resolving a different system on a later
-        # refresh would silently desynchronize the coordinator/entities from
-        # what the MQTT client is actually subscribed to. A changed
-        # resolution is only re-applied when the config entry is reloaded
-        # (which recreates this coordinator instance).
+        # The configured MQTT system is resolved once per coordinator
+        # instance (i.e. once per config entry load) and then frozen: the
+        # MQTT client in __init__.py is only ever constructed once, right
+        # after the first refresh, so re-resolving a different outcome on a
+        # later refresh would silently desynchronize the coordinator/
+        # entities from what the MQTT client is actually subscribed to. This
+        # matters even though the *configured* system_id itself can't change
+        # mid-cycle (a config/reconfigure edit reloads the entry): the
+        # resolved *device serial* for that one configured system can still
+        # flicker transiently between polls (e.g. a momentary REST hiccup),
+        # and freezing avoids flapping already-live MQTT entities back to
+        # unresolved over that. A changed resolution is only re-applied when
+        # the config entry is reloaded (which recreates this coordinator
+        # instance).
         resolved_system_id, resolved_device_serial = self._resolve_mqtt_system(
             selected_system_ids, dict(system_results)
         )
@@ -255,12 +262,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.mqtt_device_serial,
         ) and (resolved_system_id, resolved_device_serial) != self._mqtt_system_last_warned:
             _LOGGER.warning(
-                "Ignoring changed Jackery MQTT primary-system resolution from "
-                "system_id=%s/serial=%s to system_id=%s/serial=%s; reload the "
-                "integration entry to apply the new resolution",
+                "Ignoring changed Jackery MQTT resolution for configured "
+                "system_id=%s: was device serial=%s, now device serial=%s; "
+                "this does not change which system is configured for MQTT "
+                "(reload the integration entry to re-establish the "
+                "connection if this persists)",
                 self.mqtt_system_id,
                 self.mqtt_device_serial,
-                resolved_system_id,
                 resolved_device_serial,
             )
             self._mqtt_system_last_warned = (resolved_system_id, resolved_device_serial)
@@ -1616,7 +1624,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         selected_system_ids: Iterable[str],
         bundles_by_id: Mapping[str, Mapping[str, Any]],
     ) -> tuple[str | None, str]:
-        """Resolve the single selected system used for MQTT telemetry/controls.
+        """Resolve the explicitly configured MQTT system for this refresh cycle.
 
         The Jackery MQTT broker connection is only ever subscribed to one
         device's topics (see JackeryMqttClient's single device_serial), so
@@ -1626,30 +1634,38 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data_set requests, leaving entities stuck at unknown or write
         verification failing even when the device accepted the command.
 
-        This picks the first selected system (in configured order, matching
-        _resolve_selected_system_ids) that has a resolvable device serial,
-        and is deliberately simple/deterministic rather than persisted or
-        user-configurable. Explicit MQTT system selection is intentionally
-        out of scope here and left for a follow-up PR (see
-        CONTRIBUTING.md and the PR #4 review discussion on multi-system
-        accounts).
+        Unlike REST system selection, the MQTT system is a single explicit
+        choice stored in CONF_MQTT_SYSTEM_ID (set via the config/reconfigure
+        flow, with a migration default for existing entries) - this method
+        looks that one id up rather than inferring/iterating over
+        candidates. Returns (None, "") whenever the configured system can't
+        be used this cycle: not configured at all, configured but no longer
+        present in selected_system_ids (e.g. deselected via reconfigure, or
+        dropped by the account), or present but its bundle has no resolvable
+        device serial. __init__.py's ConfigEntryNotReady handling treats all
+        of these cases identically.
         """
-        for system_id in selected_system_ids:
-            bundle = bundles_by_id.get(system_id)
-            if not isinstance(bundle, Mapping):
-                continue
-            device_sn = self._extract_system_device_sn(bundle)
-            if device_sn:
-                return system_id, device_sn
-        return None, ""
+        configured_system_id = self.config_entry.options.get(CONF_MQTT_SYSTEM_ID)
+        if not configured_system_id:
+            return None, ""
+        configured_system_id = str(configured_system_id)
+        if configured_system_id not in {str(system_id) for system_id in selected_system_ids}:
+            return None, ""
+        bundle = bundles_by_id.get(configured_system_id)
+        if not isinstance(bundle, Mapping):
+            return None, ""
+        device_sn = self._extract_system_device_sn(bundle)
+        if not device_sn:
+            return None, ""
+        return configured_system_id, device_sn
 
     def is_mqtt_system(self, system_id: str) -> bool:
         """Return whether MQTT telemetry/controls are enabled for this system.
 
-        Only the resolved primary system (see _resolve_mqtt_system) is ever
-        subscribed to on the Jackery MQTT broker; every other selected
-        system remains REST-only until explicit multi-system MQTT support
-        ships.
+        Only the explicitly configured MQTT system (see _resolve_mqtt_system
+        and CONF_MQTT_SYSTEM_ID) is ever subscribed to on the Jackery MQTT
+        broker; every other selected system remains REST-only until
+        multi-system MQTT support ships.
         """
         return self.mqtt_system_id is not None and str(system_id) == self.mqtt_system_id
 
