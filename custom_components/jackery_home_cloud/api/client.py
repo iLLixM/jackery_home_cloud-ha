@@ -19,7 +19,7 @@ from ..const import (
     TREND_TYPE_DAY,
 )
 from ..crypto_utils import decrypt_text
-from ..exceptions import JackeryHomeApiError, JackeryHomeAuthError
+from ..exceptions import JackeryHomeApiError, JackeryHomeAuthError, JackeryHomeCryptoError
 from .auth import build_auth_headers, build_base_headers, build_login_payload
 
 _LOGGER = logging.getLogger(__name__)
