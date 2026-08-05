@@ -1,0 +1,8 @@
+# Test-only dependencies for the jackery_home_cloud integration test suite.
+# Install with: pip install -r tests/requirements-test.txt
+pytest
+pytest-asyncio
+pytest-cov
+freezegun
+aioresponses
+pytest-homeassistant-custom-component
