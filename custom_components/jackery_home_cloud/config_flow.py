@@ -17,6 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api.auth import build_phone_uid
 from .api.client import JackeryApiClient
+from .crypto_utils import decrypt_text
 from .const import (
     CONF_ACCOUNT,
     CONF_CRYPTO_KEY,
@@ -36,7 +37,12 @@ from .const import (
     MQTT_POLL_INTERVAL_MAX_SECONDS,
     MQTT_POLL_INTERVAL_MIN_SECONDS,
 )
-from .exceptions import JackeryHomeApiError, JackeryHomeAuthError, JackeryHomeCryptoError
+from .exceptions import (
+    JackeryCryptoError,
+    JackeryHomeApiError,
+    JackeryHomeAuthError,
+    JackeryHomeCryptoError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -305,7 +311,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             crypto_key,
                             self._discovered_mqtt_config,
                         )
-                    except JackeryHomeCryptoError:
+                    except (JackeryHomeCryptoError, JackeryCryptoError):
                         errors["base"] = "invalid_crypto_key"
 
             if not errors:
@@ -464,7 +470,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             crypto_key,
                             self._discovered_mqtt_config,
                         )
-                    except JackeryHomeCryptoError:
+                    except (JackeryHomeCryptoError, JackeryCryptoError):
                         errors["base"] = "invalid_crypto_key"
 
             if not errors:
@@ -592,7 +598,7 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
                 elif requires_crypto_key and mqtt_config.get("mqttPassword"):
                     try:
                         decrypt_text(str(mqtt_config["mqttPassword"]), crypto_key)
-                    except JackeryHomeCryptoError:
+                    except (JackeryHomeCryptoError, JackeryCryptoError):
                         errors["base"] = "invalid_crypto_key"
 
             if not errors:
