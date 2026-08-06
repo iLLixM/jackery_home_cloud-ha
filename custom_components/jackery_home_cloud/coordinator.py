@@ -981,6 +981,15 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async_set_updated_data() here would perpetually defer _async_update_data(),
         starving all REST-sourced sensors (grid power, battery SOC, PV power, ...).
         Updating self.data directly and notifying listeners avoids that side effect.
+
+        This intentionally does NOT touch self.last_update_success. That
+        field exclusively reflects REST poll health (set by HA core's
+        DataUpdateCoordinator around _async_update_data) - it used to be
+        force-set True here on every MQTT event, which meant a real MQTT
+        broker outage could never surface through it. MQTT-specific
+        availability is now a separate signal - see
+        JackeryHomeCloudCoordinator.is_control_available() (discussion #6,
+        item 4, "MQTT-aware availability").
         """
         if not self.data:
             return
@@ -994,7 +1003,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             systems[system_id] = merged_bundle
         new_data["systems"] = systems
         self.data = new_data
-        self.last_update_success = True
         self.async_update_listeners()
 
     def _ingest_mqtt_live_values(self, message: Mapping[str, Any]) -> None:
@@ -1729,6 +1737,41 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if supported_meters is None:
             return True
         return meter_id in supported_meters
+
+    def is_control_available(self, system_id: str, device_sn: str) -> bool:
+        """Return whether an MQTT-backed control/button entity should report available.
+
+        Discussion #6, item 4 ("MQTT-aware availability"): combines every
+        signal the backlog calls for - a resolvable device serial, the most
+        recent REST poll's actual success/failure (last_update_success is no
+        longer forced True by MQTT traffic, see _publish_runtime_update),
+        whether this is in fact the single system MQTT is configured for,
+        whether the MQTT client connection is currently up, and - only when
+        a gateway LWT online/offline state has actually been observed for
+        this system - that state.
+
+        No LWT observed yet is treated as available (optimistic default):
+        the MQTT client is started in __init__.py before platforms are
+        forwarded, so on a fresh/reloaded config entry the LWT retained
+        message can plausibly arrive before or after entity construction -
+        there is no ordering guarantee either way. Defaulting to
+        unavailable here would make every control flash
+        unavailable-then-available on most reloads for no diagnostic
+        value; "offline" is the strong, unambiguous signal this should
+        react to, not "we haven't heard yet".
+        """
+        if not device_sn:
+            return False
+        if not self.last_update_success:
+            return False
+        if not self.is_mqtt_system(system_id):
+            return False
+        if not bool(self._mqtt_state.get("connected", False)):
+            return False
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        bundle = systems.get(system_id)
+        gateway_state = bundle.get("device_connection") if isinstance(bundle, Mapping) else None
+        return gateway_state != "offline"
 
     def _resolve_system_day_key(self, system_id: str) -> str:
         """Return the current local day key for a selected system."""

@@ -136,7 +136,7 @@ class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Swit
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def is_on(self) -> bool | None:
@@ -270,7 +270,7 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def is_on(self) -> bool | None:
@@ -390,7 +390,7 @@ class JackeryAutoStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], S
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def is_on(self) -> bool | None:

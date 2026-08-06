@@ -169,15 +169,17 @@ class TestMqttSystemFreezeAcrossPolls:
         # dedup marker itself, so this just proves it stays stable).
         assert coordinator._mqtt_system_last_warned == first_warned
 
-    async def test_mqtt_event_forces_last_update_success_back_to_true_after_a_failed_poll(self, hass):
-        """Companion, at the full refresh-cycle level, to the entity
-        `available` gap pinned in test_entity_availability.py:
-        `_publish_runtime_update()` (invoked by the real
-        `async_handle_mqtt_message` entry point used by mqtt_client's
-        callback) unconditionally forces `last_update_success = True`
-        whenever an MQTT event arrives, even if the most recent REST poll
-        actually failed - `available` on MQTT-backed entities has no way
-        to see a REST outage once any MQTT traffic follows it.
+    async def test_mqtt_event_no_longer_forces_last_update_success_back_to_true_after_a_failed_poll(self, hass):
+        """Companion, at the full refresh-cycle level, to the fix verified
+        in test_entity_availability.py and
+        test_coordinator_control_availability.py: `_publish_runtime_update()`
+        (invoked by the real `async_handle_mqtt_message` entry point used by
+        mqtt_client's callback) used to unconditionally force
+        `last_update_success = True` whenever an MQTT event arrived, even if
+        the most recent REST poll had actually failed. It no longer touches
+        `last_update_success` at all (discussion #6, item 4, "MQTT-aware
+        availability") - MQTT-specific availability is now a separate
+        signal, see `JackeryHomeCloudCoordinator.is_control_available`.
         """
         client = _make_client([[_system(SYSTEM_A, "SN-A")]])
         coordinator = await _make_coordinator(hass, client)
@@ -189,4 +191,4 @@ class TestMqttSystemFreezeAcrossPolls:
         assert coordinator.last_update_success is False
 
         await coordinator.async_handle_mqtt_message({})
-        assert coordinator.last_update_success is True
+        assert coordinator.last_update_success is False

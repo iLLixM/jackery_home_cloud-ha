@@ -126,7 +126,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def _system_bundle(self) -> dict[str, Any] | None:
