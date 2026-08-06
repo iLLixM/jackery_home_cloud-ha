@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Mit Jackery Home Cloud verbinden",
-        "description": "Gib deine Zugangsdaten für Jackery Home Cloud ein.",
+        "description": "Gib deine Zugangsdaten für den 'Jackery Home' Account ein.",
         "data": {
           "account": "Nutzername",
           "password": "Passwort"
@@ -11,7 +11,7 @@
       },
       "systems": {
         "title": "Systeme und MQTT-Optionen auswählen",
-        "description": "Wähle aus, welche Systeme zu Home Assistant hinzugefügt werden sollen, und konfiguriere die optionalen MQTT-Verbindungseinstellungen.",
+        "description": "Wähle aus, welche Systeme zu Home Assistant hinzugefügt werden sollen. Konfiguriere die optionalen MQTT-Verbindungseinstellungen.",
         "data": {
           "selected_systems": "Systeme",
           "enable_mqtt": "MQTT-Verbindung aktivieren",
@@ -45,7 +45,7 @@
       },
       "reconfigure_systems": {
         "title": "Systeme und MQTT-Optionen auswählen",
-        "description": "Wähle aus, welche Systeme in Home Assistant aktiviert bleiben sollen, und konfiguriere die MQTT-Verbindungseinstellungen.",
+        "description": "Wähle aus, welche Systeme in Home Assistant aktiviert bleiben sollen. Konfiguriere die MQTT-Verbindungseinstellungen.",
         "data": {
           "selected_systems": "Systeme",
           "enable_mqtt": "MQTT-Verbindung aktivieren",
@@ -78,7 +78,7 @@
     "step": {
       "init": {
         "title": "Systeme und MQTT-Optionen",
-        "description": "Wähle aus, welche Systeme in Home Assistant aktiviert bleiben sollen, und konfiguriere optional die MQTT-Verbindungseinstellungen.",
+        "description": "Wähle aus, welche Systeme in Home Assistant aktiviert bleiben sollen. Konfiguriere optional die MQTT-Verbindungseinstellungen.",
         "data": {
           "selected_systems": "Systeme",
           "enable_mqtt": "MQTT-Verbindung aktivieren",
