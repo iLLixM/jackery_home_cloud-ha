@@ -26,6 +26,7 @@ from .const import (
     CONF_SELECTED_SYSTEMS,
     DAILY_TREND_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
+    MODEL_CAPABILITIES,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_SOC_METER_ID,
@@ -1684,6 +1685,50 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         multi-system MQTT support ships.
         """
         return self.mqtt_system is not None and str(system_id) == self.mqtt_system.system_id
+
+    def _detect_system_model(self, bundle: Mapping[str, Any]) -> str | None:
+        """Return the REST-reported factory model for a system bundle, if any."""
+        system = bundle.get("system", {}) if isinstance(bundle, Mapping) else {}
+        if not isinstance(system, Mapping):
+            return None
+        for key in ("factoryModel", "series", "model"):
+            value = system.get(key)
+            if value:
+                return str(value).strip()
+        return None
+
+    def detected_model(self, system_id: str) -> str | None:
+        """Return the detected model for a selected system, if resolvable."""
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        bundle = systems.get(system_id)
+        return self._detect_system_model(bundle) if isinstance(bundle, Mapping) else None
+
+    def is_model_confirmed(self, system_id: str) -> bool:
+        """Return whether this system's detected model has a MODEL_CAPABILITIES entry.
+
+        See discussion #6, item 9 ("Device capability and model detection").
+        A confirmed model's capability set has actually been validated
+        against real hardware; an unconfirmed model is not "unsupported",
+        just untested - see supports_meter()'s fallback policy.
+        """
+        model = self.detected_model(system_id)
+        return model is not None and model in MODEL_CAPABILITIES
+
+    def supports_meter(self, system_id: str, meter_id: str) -> bool:
+        """Return whether this system's detected model is known to expose meter_id.
+
+        Unconfirmed/unmapped models return True for every meter_id (see
+        MODEL_CAPABILITIES's docstring in const.py) - only a *confirmed*
+        model whose capability set is known NOT to include meter_id returns
+        False.
+        """
+        if not self.is_mqtt_system(system_id):
+            return False
+        model = self.detected_model(system_id)
+        supported_meters = MODEL_CAPABILITIES.get(model) if model else None
+        if supported_meters is None:
+            return True
+        return meter_id in supported_meters
 
     def _resolve_system_day_key(self, system_id: str) -> str:
         """Return the current local day key for a selected system."""

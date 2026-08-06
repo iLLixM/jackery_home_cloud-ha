@@ -49,14 +49,17 @@ async def async_setup_entry(
         device_sn = _extract_system_device_sn(bundle)
         if not device_sn:
             continue
-        entities.append(
-            JackeryRebootButton(
-                system_id=str(system_id),
-                bundle=bundle,
-                mqtt_client=runtime.mqtt_client,
-                device_sn=device_sn,
-            )
+        if not coordinator.supports_meter(system_id, MQTT_EMS_REBOOT_METER_ID):
+            continue
+        entity = JackeryRebootButton(
+            system_id=str(system_id),
+            bundle=bundle,
+            mqtt_client=runtime.mqtt_client,
+            device_sn=device_sn,
         )
+        if not coordinator.is_model_confirmed(system_id):
+            entity._attr_entity_registry_enabled_default = False
+        entities.append(entity)
 
     if entities:
         async_add_entities(entities)

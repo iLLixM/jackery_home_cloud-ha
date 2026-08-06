@@ -73,24 +73,29 @@ async def async_setup_entry(
         device_sn = _extract_system_device_sn(bundle)
         if not device_sn:
             continue
-        entities.append(
-            JackeryWorkModeSelect(
+        model_confirmed = coordinator.is_model_confirmed(system_id)
+        if coordinator.supports_meter(system_id, MQTT_EMS_WORK_MODE_METER_ID):
+            entity = JackeryWorkModeSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
-        entities.append(
-            JackeryOutputPowerLimitSelect(
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
+        if coordinator.supports_meter(system_id, MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID):
+            entity = JackeryOutputPowerLimitSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
 
     if entities:
         async_add_entities(entities)

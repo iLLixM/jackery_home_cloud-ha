@@ -15,6 +15,7 @@ from .const import (
     CONF_MQTT_SYSTEM_ID,
     CONF_PASSWORD,
     CONF_PHONE_UID,
+    MODEL_CAPABILITIES,
 )
 
 TO_REDACT = {
@@ -49,6 +50,13 @@ async def async_get_config_entry_diagnostics(
     resolved_system_id = mqtt_system.system_id if mqtt_system is not None else None
     resolved_device_serial = mqtt_system.device_serial if mqtt_system is not None else ""
 
+    detected_model = None
+    capability_source = None
+    if coordinator is not None and resolved_system_id is not None and hasattr(coordinator, "detected_model"):
+        detected_model = coordinator.detected_model(resolved_system_id)
+        if detected_model is not None:
+            capability_source = "confirmed" if detected_model in MODEL_CAPABILITIES else "unconfirmed_fallback"
+
     return {
         "entry": {
             "data": async_redact_data(dict(entry.data), TO_REDACT),
@@ -59,6 +67,8 @@ async def async_get_config_entry_diagnostics(
             "configured_system_id": entry.options.get(CONF_MQTT_SYSTEM_ID),
             "resolved_system_id": resolved_system_id,
             "resolved_device_serial": resolved_device_serial,
+            "detected_model": detected_model,
+            "capability_source": capability_source,
             "connection_state": dict(data.get("mqtt_state", {})),
             "broker_config": async_redact_data(mqtt_credentials, TO_REDACT),
         },

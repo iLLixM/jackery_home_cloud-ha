@@ -57,6 +57,7 @@ def _coordinator(
     mqtt_device_serial="SN1",
     mqtt_credentials=None,
     data=None,
+    detected_model=None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         mqtt_system=(
@@ -71,6 +72,7 @@ def _coordinator(
             "selected_system_ids": ["1", "2"],
             "available_systems": {"1": {}, "2": {}, "3": {}},
         },
+        detected_model=lambda system_id: detected_model,
     )
 
 
@@ -126,6 +128,34 @@ class TestContent:
         assert result["mqtt"]["configured_system_id"] == "2"
         assert result["mqtt"]["resolved_system_id"] == "2"
         assert result["mqtt"]["resolved_device_serial"] == "SN2"
+
+    async def test_exposes_confirmed_model_capability_source(self, hass):
+        entry = _entry(
+            coordinator=_coordinator(detected_model="JAKS-IN1K5-BA2K-EUA1"),
+        )
+
+        result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["mqtt"]["detected_model"] == "JAKS-IN1K5-BA2K-EUA1"
+        assert result["mqtt"]["capability_source"] == "confirmed"
+
+    async def test_exposes_unconfirmed_model_capability_source(self, hass):
+        entry = _entry(
+            coordinator=_coordinator(detected_model="SOME-FUTURE-MODEL"),
+        )
+
+        result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["mqtt"]["detected_model"] == "SOME-FUTURE-MODEL"
+        assert result["mqtt"]["capability_source"] == "unconfirmed_fallback"
+
+    async def test_no_detected_model_leaves_capability_fields_none(self, hass):
+        entry = _entry(coordinator=_coordinator(detected_model=None))
+
+        result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["mqtt"]["detected_model"] is None
+        assert result["mqtt"]["capability_source"] is None
 
     async def test_exposes_mqtt_connection_state(self, hass):
         coordinator = _coordinator(data={"mqtt_state": {"connected": False, "error": "timeout"}})

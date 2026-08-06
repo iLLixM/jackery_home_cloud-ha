@@ -515,18 +515,29 @@ def _build_entities(
         # system regardless, since they fall back to REST automatically for
         # non-primary systems.
         system_has_mqtt = mqtt_enabled and coordinator.is_mqtt_system(system_id)
+        # requires_mqtt sensors have no per-meter capability gating in the
+        # MVP of discussion #6 item 9 ("Device capability and model
+        # detection") - unlike number/select/switch/button, none of these
+        # descriptions carry an individual meter id today. Instead, on an
+        # unconfirmed model they're created disabled-by-default so a user
+        # must explicitly opt in, same soft signal as the other platforms.
+        system_model_confirmed = system_has_mqtt and coordinator.is_model_confirmed(system_id)
         for description in SYSTEM_SENSOR_DESCRIPTIONS:
             if description.requires_mqtt and not system_has_mqtt:
                 continue
-            entities.append(
-                JackeryMetricSensor(
-                    coordinator=coordinator,
-                    system_id=system_id,
-                    description=description,
-                )
+            entity = JackeryMetricSensor(
+                coordinator=coordinator,
+                system_id=system_id,
+                description=description,
             )
+            if description.requires_mqtt and not system_model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
         if system_has_mqtt:
-            entities.append(JackeryScheduleSensor(coordinator=coordinator, system_id=system_id))
+            schedule_entity = JackeryScheduleSensor(coordinator=coordinator, system_id=system_id)
+            if not system_model_confirmed:
+                schedule_entity._attr_entity_registry_enabled_default = False
+            entities.append(schedule_entity)
 
     return entities
 
