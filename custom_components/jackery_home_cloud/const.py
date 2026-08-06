@@ -60,6 +60,13 @@ MQTT_LIVE_VALUE_MAX_AGE_SECONDS = 900
 # Fixed (non-user-configurable) cadence for the slow "cumulative totals" poll
 # group - 3x headroom under MQTT_LIVE_VALUE_MAX_AGE_SECONDS above.
 MQTT_TOTALS_POLL_INTERVAL_SECONDS = 300
+# Fixed (non-user-configurable) cadence for reconciling the config/schedule
+# meter group against the device (discussion #6, item 8, "Configuration
+# reconciliation for external changes"). This group is otherwise only
+# requested on MQTT reconnect and right after a write targeting it (see
+# refresh_group on async_set_meter_value) - this timer is what catches
+# settings changed through the Jackery app instead of through HA.
+MQTT_CONFIG_RECONCILE_INTERVAL_SECONDS = 1800
 # MQTT_POLL_INTERVAL_MAX_SECONDS above must stay comfortably below this
 # value, or the power/SOC sensors it gates will flap between MQTT and REST
 # every poll cycle.
