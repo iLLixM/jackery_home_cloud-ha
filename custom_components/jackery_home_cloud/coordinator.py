@@ -204,6 +204,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Per-system wake signal for async_set_meter_value()'s event-driven
+        # verification wait (discussion #6, item 6, "Event-driven write
+        # verification") - set by _notify_mqtt_update() whenever any of the
+        # three _ingest_mqtt_* methods writes new data for that system into
+        # _mqtt_live_values. Only created lazily by a waiter (setdefault in
+        # async_set_meter_value) so systems nobody is writing to never get one.
+        self._mqtt_update_events: dict[str, asyncio.Event] = {}
         # Only one system is ever subscribed to on the Jackery MQTT broker
         # (see JackeryMqttClient, which is initialized with a single device
         # serial). This tracks which selected system that is, so MQTT
@@ -721,6 +728,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         fallback to a value-only match; every bundle_key passed here must
         have a companion timestamp tracked in _mqtt_live_values.
 
+        Verification is event-driven (discussion #6, item 6): rather than
+        blindly sleeping for verify_delay_seconds before checking once, each
+        attempt checks immediately after publish (covers a response that
+        already arrived while publishing), and if not yet confirmed, waits
+        on a per-system asyncio.Event that _notify_mqtt_update() sets
+        whenever new MQTT data lands for this system - rechecking on every
+        wake - until either confirmed or verify_delay_seconds (now a
+        per-attempt timeout ceiling, not a fixed delay) elapses. This wakes
+        as soon as the device responds instead of always waiting the full
+        delay, while still tolerating an unrelated update on the same
+        system waking it early without falsely confirming.
+
         Writes are serialized per (system_id, meter_id) using a lock stored
         in _meter_write_locks, so concurrent calls targeting the same meter
         (e.g. a rapid double-toggle) can't interleave their publish/verify
@@ -756,6 +775,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ems_device_sn = f"{dev_sn_prefix}_{device_sn}"
 
         lock = self._meter_write_locks.setdefault((system_id, meter_id), asyncio.Lock())
+        update_event = self._mqtt_update_events.setdefault(system_id, asyncio.Event())
+        loop = asyncio.get_running_loop()
         last_seen: Any = None
         last_seen_at: Any = None
         last_error: Exception | None = None
@@ -790,15 +811,35 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         await asyncio.sleep(verify_delay_seconds)
                         continue
 
-                    await asyncio.sleep(verify_delay_seconds)
-                    systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
-                    current_bundle = systems.get(system_id)
-                    live = self._mqtt_live_values.get(system_id, {})
-                    last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
-                    last_seen_at = live.get(timestamp_key)
+                    # Event-driven verification: check immediately (covers a
+                    # response that already arrived while publishing above),
+                    # then - if not yet confirmed - wake on the next MQTT
+                    # update for this system rather than sleeping blindly,
+                    # rechecking each wake until confirmed or this attempt's
+                    # timeout budget is exhausted. clear()+wait() below have
+                    # no `await` between them, so a set() from the message
+                    # handler can't be lost between the two.
+                    deadline = loop.time() + verify_delay_seconds
+                    while True:
+                        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+                        current_bundle = systems.get(system_id)
+                        live = self._mqtt_live_values.get(system_id, {})
+                        last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
+                        last_seen_at = live.get(timestamp_key)
 
-                    value_matches = _mqtt_control_values_match(expected_bundle_value, last_seen)
-                    value_is_fresh = last_seen_at is not None and last_seen_at >= cutoff
+                        value_matches = _mqtt_control_values_match(expected_bundle_value, last_seen)
+                        value_is_fresh = last_seen_at is not None and last_seen_at >= cutoff
+                        if value_matches and value_is_fresh:
+                            break
+
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            break
+                        update_event.clear()
+                        try:
+                            await asyncio.wait_for(update_event.wait(), timeout=remaining)
+                        except asyncio.TimeoutError:
+                            break
 
                     if value_matches and value_is_fresh:
                         _LOGGER.debug(
@@ -929,6 +970,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
         self._mqtt_live_values[system_id] = updated
+        self._notify_mqtt_update(system_id)
         _LOGGER.debug(
             "Accepted MQTT AC output state for %s via %s: raw=%s is_on=%s",
             system_id,
@@ -966,6 +1008,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
         self._mqtt_live_values[system_id] = updated
+        self._notify_mqtt_update(system_id)
         _LOGGER.debug(
             "Accepted MQTT device connection state for %s: %s",
             system_id,
@@ -1559,6 +1602,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         self._mqtt_live_values[system_id] = updated
+        self._notify_mqtt_update(system_id)
 
     def _extract_ac_output_state(self, payload: Mapping[str, Any], gw_sn: str) -> str | None:
         """Return the raw AC output state from an MQTT control payload."""
@@ -1693,6 +1737,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         multi-system MQTT support ships.
         """
         return self.mqtt_system is not None and str(system_id) == self.mqtt_system.system_id
+
+    def _notify_mqtt_update(self, system_id: str) -> None:
+        """Wake any async_set_meter_value() verification wait for this system.
+
+        Called after _mqtt_live_values[system_id] is written by any of the
+        three _ingest_mqtt_* methods. Looked up rather than created here -
+        only a waiter (async_set_meter_value) creates the Event, via
+        setdefault, so systems nobody is currently writing to never get one.
+        """
+        event = self._mqtt_update_events.get(system_id)
+        if event is not None:
+            event.set()
 
     def _detect_system_model(self, bundle: Mapping[str, Any]) -> str | None:
         """Return the REST-reported factory model for a system bundle, if any."""

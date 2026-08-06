@@ -5,10 +5,11 @@
   "Parser behavior" section: raw schedule values, missing leading zeros.
 
 `_ingest_mqtt_live_values` only reads `self.data` (for
-`_resolve_system_id_from_gw_sn`) and `self.mqtt_system_id` (via
-`is_mqtt_system`), and writes `self._mqtt_live_values` - no `hass`
-needed. Built via `object.__new__`, same pattern as
-test_coordinator_bundle_merge.py.
+`_resolve_system_id_from_gw_sn`) and `self.mqtt_system` (via
+`is_mqtt_system`), and writes `self._mqtt_live_values` and
+`self._mqtt_update_events` (via `_notify_mqtt_update` - see discussion #6,
+item 6, "Event-driven write verification") - no `hass` needed. Built via
+`object.__new__`, same pattern as test_coordinator_bundle_merge.py.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from custom_components.jackery_home_cloud.const import (
 )
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
+    JackeryMqttSystem,
 )
 from custom_components.jackery_home_cloud.sensor import _schedule_windows
 
@@ -33,7 +35,7 @@ SECONDARY_SERIAL = "SN-SECONDARY"
 
 def _make_coordinator() -> JackeryHomeCloudCoordinator:
     coordinator = object.__new__(JackeryHomeCloudCoordinator)
-    coordinator.mqtt_system_id = PRIMARY_SYSTEM
+    coordinator.mqtt_system = JackeryMqttSystem(system_id=PRIMARY_SYSTEM, device_serial=PRIMARY_SERIAL)
     coordinator.data = {
         "systems": {
             PRIMARY_SYSTEM: {"system": {"systemNo": PRIMARY_SERIAL}},
@@ -41,6 +43,7 @@ def _make_coordinator() -> JackeryHomeCloudCoordinator:
         }
     }
     coordinator._mqtt_live_values = {}
+    coordinator._mqtt_update_events = {}
     return coordinator
 
 
@@ -85,7 +88,7 @@ class TestSecondarySystemIgnored:
 
     def test_no_mqtt_system_resolved_yet_ignores_everything(self):
         coordinator = _make_coordinator()
-        coordinator.mqtt_system_id = None
+        coordinator.mqtt_system = None
         message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "6150715"]])
 
         coordinator._ingest_mqtt_live_values(message)

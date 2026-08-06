@@ -10,10 +10,17 @@ This is the method every writable MQTT entity (switch/select/number/
 button) ultimately calls to publish a `data_set` command and confirm the
 device applied it. It only reads/writes `self.config_entry.runtime_data.
 mqtt_client`, `self.data`, `self._mqtt_live_values`, `self._meter_write_
-locks`, and `self.mqtt_system_id` (via `is_mqtt_system`) - none of it
-needs a real `hass`, so the coordinator is built via `object.__new__` with
-just those attributes seeded, same pattern as
-test_coordinator_bundle_merge.py.
+locks`, `self._mqtt_update_events`, and `self.mqtt_system` (via
+`is_mqtt_system`) - none of it needs a real `hass`, so the coordinator is
+built via `object.__new__` with just those attributes seeded, same pattern
+as test_coordinator_bundle_merge.py.
+
+Verification is event-driven (discussion #6, item 6): every fake publisher
+below mutates `coordinator.data`/`_mqtt_live_values` synchronously inside
+`async_publish_json` (i.e. before it returns), so `async_set_meter_value`'s
+immediate post-publish check already sees the new state without ever
+needing to actually wait on `_mqtt_update_events` - `verify_delay_seconds=0`
+just keeps that timeout budget at zero for attempts that don't confirm.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
+    JackeryMqttSystem,
 )
 
 SYSTEM_ID = "sys1"
@@ -65,7 +73,11 @@ def _make_coordinator(
     live_values: dict | None = None,
 ) -> JackeryHomeCloudCoordinator:
     coordinator = object.__new__(JackeryHomeCloudCoordinator)
-    coordinator.mqtt_system_id = mqtt_system_id
+    coordinator.mqtt_system = (
+        JackeryMqttSystem(system_id=mqtt_system_id, device_serial="irrelevant")
+        if mqtt_system_id is not None
+        else None
+    )
     coordinator.config_entry = SimpleNamespace(
         runtime_data=SimpleNamespace(mqtt_client=mqtt_client)
     )
@@ -74,6 +86,7 @@ def _make_coordinator(
     }
     coordinator._mqtt_live_values = {SYSTEM_ID: live_values if live_values is not None else {}}
     coordinator._meter_write_locks = {}
+    coordinator._mqtt_update_events = {}
     return coordinator
 
 
@@ -296,6 +309,65 @@ class TestConcurrency:
 
         assert publisher.calls == 2
         assert publisher.max_concurrent == 2  # ran concurrently, not serialized
+
+
+class TestEventDrivenWakeup:
+    """Discussion #6, item 6, "Event-driven write verification": these are
+    the only tests in this file where the fake publisher does NOT mutate
+    state synchronously inside async_publish_json - the confirming update
+    instead lands from a separate task after publish already returned, so
+    these actually exercise the asyncio.Event wait path in
+    async_set_meter_value rather than resolving on the pre-wait immediate
+    check like every other test above.
+    """
+
+    async def test_wakes_promptly_on_matching_update_instead_of_sleeping_full_timeout(self):
+        """The fix this refactor exists for: confirmation arrives as soon
+        as the matching update lands, not after the full verify_delay_seconds
+        timeout - even when that timeout is generous."""
+        publisher = _RecordingPublisher()
+        coordinator = _make_coordinator(mqtt_client=publisher)
+        coordinator._mqtt_update_events[SYSTEM_ID] = asyncio.Event()
+
+        async def _deliver_update_shortly():
+            await asyncio.sleep(0.05)
+            coordinator.data["systems"][SYSTEM_ID][BUNDLE_KEY] = EXPECTED
+            coordinator._mqtt_live_values[SYSTEM_ID][TIMESTAMP_KEY] = dt_util.utcnow()
+            coordinator._mqtt_update_events[SYSTEM_ID].set()
+
+        deliver_task = asyncio.ensure_future(_deliver_update_shortly())
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await _set_meter_value(coordinator, publisher, verify_delay_seconds=5.0)
+        elapsed = loop.time() - start
+
+        assert publisher.calls == 1
+        assert elapsed < 1.0  # woke on the event, did not sleep the full 5s timeout
+        await deliver_task
+
+    async def test_unrelated_wakeup_does_not_falsely_confirm_and_keeps_waiting(self):
+        """An unrelated MQTT update for the same system (e.g. a different
+        meter) sets the same per-system event, waking the wait - but must
+        not falsely confirm this write. It should recheck, find no match,
+        and keep waiting for the real update within the same attempt's
+        timeout budget instead of publishing a retry."""
+        publisher = _RecordingPublisher()
+        coordinator = _make_coordinator(mqtt_client=publisher)
+        coordinator._mqtt_update_events[SYSTEM_ID] = asyncio.Event()
+
+        async def _deliver():
+            await asyncio.sleep(0.02)
+            coordinator._mqtt_update_events[SYSTEM_ID].set()  # unrelated wake
+            await asyncio.sleep(0.02)
+            coordinator.data["systems"][SYSTEM_ID][BUNDLE_KEY] = EXPECTED
+            coordinator._mqtt_live_values[SYSTEM_ID][TIMESTAMP_KEY] = dt_util.utcnow()
+            coordinator._mqtt_update_events[SYSTEM_ID].set()
+
+        deliver_task = asyncio.ensure_future(_deliver())
+        await _set_meter_value(coordinator, publisher, verify_delay_seconds=2.0)
+
+        assert publisher.calls == 1  # confirmed within the same attempt, no retry publish
+        await deliver_task
 
 
 class TestRefreshGroupCallback:
