@@ -210,7 +210,32 @@ class JackeryHomeClient:
         )
 
     def get_mqtt_config(self) -> Dict[str, Any]:
-        return self._request("GET", "/geneverse-iot-home/v1/idc/config/mqttServer", auth=True)
+        endpoints = (
+            ("/geneverse-iot-home/v2/idc/config/mqttServer", True, "v2"),
+            ("/geneverse-iot-home/v1/idc/config/mqttServer", False, "v1"),
+        )
+
+        last_error: Optional[Exception] = None
+        for path, password_is_plaintext, source_endpoint in endpoints:
+            try:
+                data = self._request("GET", path, auth=True)
+                result = data.get("result") or {}
+                if (
+                    result.get("mqttServer")
+                    and result.get("mqttUserName")
+                    and result.get("mqttPassword")
+                ):
+                    result["_source_endpoint"] = source_endpoint
+                    result["_password_is_plaintext"] = password_is_plaintext
+                    return result
+            except JackeryHomeApiError as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+        raise JackeryHomeApiError(
+            "MQTT response did not contain complete credentials."
+        )
 
 
 def parse_bool(value: str) -> bool:
