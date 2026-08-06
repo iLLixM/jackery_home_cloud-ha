@@ -60,7 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.runtime_data = runtime
 
     if entry.options.get(CONF_ENABLE_MQTT):
-        if coordinator.mqtt_system_id is None or not coordinator.mqtt_device_serial:
+        if coordinator.mqtt_system is None:
             # No eligible system was resolved on this first refresh (e.g. a
             # transient API hiccup). Raising ConfigEntryNotReady lets Home
             # Assistant's own setup retry/backoff re-attempt async_setup_entry
@@ -82,8 +82,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "systems remain REST-only.",
                 entry.title,
                 selected_system_count,
-                coordinator.mqtt_system_id,
-                coordinator.mqtt_device_serial,
+                coordinator.mqtt_system.system_id,
+                coordinator.mqtt_system.device_serial,
             )
 
         crypto_key = str(entry.options.get(CONF_CRYPTO_KEY, "")).strip()
@@ -93,16 +93,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 coordinator.mqtt_credentials,
             )
             mqtt_tls_insecure = bool(entry.options.get(CONF_MQTT_TLS_INSECURE, False))
-            # coordinator.mqtt_system_id/mqtt_device_serial are resolved by
-            # _resolve_mqtt_system() during the first refresh above. Only
-            # this single system's topics are subscribed to below; every
-            # other REST-selected system in a multi-system account stays
-            # REST-only (see JackeryHomeCloudCoordinator.is_mqtt_system).
-            main_device_serial = coordinator.mqtt_device_serial
+            # coordinator.mqtt_system is resolved by _resolve_mqtt_system()
+            # during the first refresh above. Only this single system's
+            # topics are subscribed to below; every other REST-selected
+            # system in a multi-system account stays REST-only (see
+            # JackeryHomeCloudCoordinator.is_mqtt_system).
+            main_device_serial = coordinator.mqtt_system.device_serial
             _LOGGER.debug("Jackery MQTT TLS insecure option from config entry: %s", mqtt_tls_insecure)
             _LOGGER.debug(
                 "Jackery MQTT enabled for system_id=%s, device serial=%s (targeted subscriptions only)",
-                coordinator.mqtt_system_id,
+                coordinator.mqtt_system.system_id,
                 main_device_serial,
             )
             mqtt_client = JackeryMqttClient(

@@ -34,6 +34,7 @@ from custom_components.jackery_home_cloud.const import (
     CONF_SELECTED_SYSTEMS,
     DOMAIN,
 )
+from custom_components.jackery_home_cloud.coordinator import JackeryMqttSystem
 from custom_components.jackery_home_cloud.exceptions import (
     JackeryHomeCryptoError,
     JackeryHomeMqttError,
@@ -55,8 +56,7 @@ class _FakeCoordinator:
         self.config_entry = config_entry
         self.client = client
         self.data = {"selected_system_ids": ["1"], "systems": {}}
-        self.mqtt_system_id = "1"
-        self.mqtt_device_serial = "SN1"
+        self.mqtt_system = JackeryMqttSystem(system_id="1", device_serial="SN1")
         self.mqtt_credentials = {}
         self.async_config_entry_first_refresh = AsyncMock()
         self.async_handle_mqtt_status = AsyncMock()
@@ -122,8 +122,7 @@ class TestAsyncSetupEntryMqttEnabled:
         class _NoPrimaryCoordinator(_FakeCoordinator):
             def __init__(self, hass, config_entry, client):
                 super().__init__(hass, config_entry, client)
-                self.mqtt_system_id = None
-                self.mqtt_device_serial = ""
+                self.mqtt_system = None
 
         monkeypatch.setattr(integration, "JackeryHomeCloudCoordinator", _NoPrimaryCoordinator)
         entry = _entry(options={CONF_ENABLE_MQTT: True})

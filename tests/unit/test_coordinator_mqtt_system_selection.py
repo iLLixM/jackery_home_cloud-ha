@@ -13,7 +13,8 @@ via `object.__new__` with a minimal `config_entry` stand-in (a
 reads), matching the rest of this test suite's pattern for pure
 coordinator-method tests that don't need a real `hass`/`ConfigEntry`.
 `is_mqtt_system` is unaffected by this change - it still reads exactly one
-attribute (`self.mqtt_system_id`).
+attribute (`self.mqtt_system`, a `JackeryMqttSystem | None` - see discussion
+#6 item 2, "Structured MQTT system runtime model").
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from types import SimpleNamespace
 from custom_components.jackery_home_cloud.const import CONF_MQTT_SYSTEM_ID
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
+    JackeryMqttSystem,
 )
 
 
@@ -30,7 +32,11 @@ def _make_coordinator(
     *, mqtt_system_id: str | None = None, configured_mqtt_system_id: str | None = None
 ) -> JackeryHomeCloudCoordinator:
     coordinator = object.__new__(JackeryHomeCloudCoordinator)
-    coordinator.mqtt_system_id = mqtt_system_id
+    coordinator.mqtt_system = (
+        JackeryMqttSystem(system_id=mqtt_system_id, device_serial="irrelevant")
+        if mqtt_system_id is not None
+        else None
+    )
     coordinator.config_entry = SimpleNamespace(
         options={CONF_MQTT_SYSTEM_ID: configured_mqtt_system_id}
     )
@@ -45,10 +51,9 @@ class TestResolveMqttSystem:
             "sys2": {"main_device_serial": "SN2"},
         }
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1", "sys2"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1", "sys2"], bundles)
 
-        assert system_id == "sys1"
-        assert device_sn == "SN1"
+        assert resolved == JackeryMqttSystem(system_id="sys1", device_serial="SN1")
 
     def test_ignores_other_systems_even_if_they_have_resolvable_serials(self):
         """Regression pin: the configured system is the only candidate - a
@@ -61,28 +66,25 @@ class TestResolveMqttSystem:
             "sys2": {"main_device_serial": "SN2"},
         }
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1", "sys2"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1", "sys2"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_returns_none_when_no_system_configured(self):
         coordinator = _make_coordinator(configured_mqtt_system_id=None)
         bundles = {"sys1": {"main_device_serial": "SN1"}}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_returns_none_when_configured_system_is_empty_string(self):
         coordinator = _make_coordinator(configured_mqtt_system_id="")
         bundles = {"sys1": {"main_device_serial": "SN1"}}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_returns_none_when_configured_system_not_in_selected_ids_this_cycle(self):
         """Covers both a system deselected via reconfigure and one dropped
@@ -90,54 +92,48 @@ class TestResolveMqttSystem:
         coordinator = _make_coordinator(configured_mqtt_system_id="sys1")
         bundles = {"sys2": {"main_device_serial": "SN2"}}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys2"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys2"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_returns_none_when_configured_system_bundle_missing(self):
         coordinator = _make_coordinator(configured_mqtt_system_id="sys1")
         bundles: dict = {}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_returns_none_when_configured_system_bundle_is_not_a_mapping(self):
         coordinator = _make_coordinator(configured_mqtt_system_id="sys1")
         bundles = {"sys1": "not-a-mapping"}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_returns_none_when_configured_system_bundle_has_no_serial(self):
         coordinator = _make_coordinator(configured_mqtt_system_id="sys1")
         bundles = {"sys1": {}}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["sys1"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["sys1"], bundles)
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_empty_selected_system_ids_returns_none(self):
         coordinator = _make_coordinator(configured_mqtt_system_id="sys1")
 
-        system_id, device_sn = coordinator._resolve_mqtt_system([], {"sys1": {"main_device_serial": "SN1"}})
+        resolved = coordinator._resolve_mqtt_system([], {"sys1": {"main_device_serial": "SN1"}})
 
-        assert system_id is None
-        assert device_sn == ""
+        assert resolved is None
 
     def test_compares_configured_id_via_str_coercion(self):
         coordinator = _make_coordinator(configured_mqtt_system_id=123)
         bundles = {"123": {"main_device_serial": "SN1"}}
 
-        system_id, device_sn = coordinator._resolve_mqtt_system(["123"], bundles)
+        resolved = coordinator._resolve_mqtt_system(["123"], bundles)
 
-        assert system_id == "123"
-        assert device_sn == "SN1"
+        assert resolved == JackeryMqttSystem(system_id="123", device_serial="SN1")
 
 
 class TestIsMqttSystem:

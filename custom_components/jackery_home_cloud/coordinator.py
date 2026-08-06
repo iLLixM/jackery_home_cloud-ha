@@ -121,6 +121,11 @@ _SCHEDULE_EMS_METER_IDS: tuple[str, ...] = (
     *MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
 )
 
+# Sentinel for "no divergent MQTT resolution has been warned about yet",
+# distinct from a legitimate resolved-to-nothing outcome (`None`) so the
+# two can't be confused - see _async_update_data's freeze block.
+_MQTT_SYSTEM_NOT_YET_WARNED: Any = object()
+
 
 @dataclass(slots=True)
 class DailyTrendCache:
@@ -146,6 +151,19 @@ class BatteryResolution:
     bms_list_sum_kwh: float | None
     cluster_reference_kwh: float | None
     all_zero_sources: bool
+
+
+@dataclass(frozen=True, slots=True)
+class JackeryMqttSystem:
+    """The single Jackery system explicitly configured for MQTT.
+
+    Invariant enforced by _resolve_mqtt_system(): if this is non-None, both
+    fields are guaranteed non-empty - there is no "partial" resolved state.
+    Consumers only ever need `is None` as the absence check.
+    """
+
+    system_id: str
+    device_serial: str
 
 
 class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -187,18 +205,21 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
         # Only one system is ever subscribed to on the Jackery MQTT broker
         # (see JackeryMqttClient, which is initialized with a single device
-        # serial). These track which selected system that is, so MQTT
+        # serial). This tracks which selected system that is, so MQTT
         # telemetry/controls/polling can be limited to it instead of being
         # silently applied to every REST-selected system. The system itself
         # is an explicit user choice (CONF_MQTT_SYSTEM_ID, set via the
         # config/reconfigure flow) - see _resolve_mqtt_system() and
         # is_mqtt_system().
-        self.mqtt_system_id: str | None = None
-        self.mqtt_device_serial: str = ""
-        # Tracks the last (system_id, device_serial) pair we already warned
-        # about in _async_update_data(), so a persistently different
-        # resolution logs once instead of on every refresh cycle.
-        self._mqtt_system_last_warned: tuple[str | None, str] | None = None
+        self.mqtt_system: JackeryMqttSystem | None = None
+        # Tracks the last resolution we already warned about in
+        # _async_update_data(), so a persistently different resolution logs
+        # once instead of on every refresh cycle. Starts at the
+        # _MQTT_SYSTEM_NOT_YET_WARNED sentinel rather than None, because a
+        # divergent resolution can itself legitimately be None (resolved to
+        # nothing) - conflating that with "haven't warned yet" would skip
+        # the very first warning whenever the divergent outcome is None.
+        self._mqtt_system_last_warned: JackeryMqttSystem | None = _MQTT_SYSTEM_NOT_YET_WARNED
 
     @property
     def mqtt_credentials(self) -> dict[str, Any]:
@@ -252,26 +273,21 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # unresolved over that. A changed resolution is only re-applied when
         # the config entry is reloaded (which recreates this coordinator
         # instance).
-        resolved_system_id, resolved_device_serial = self._resolve_mqtt_system(
-            selected_system_ids, dict(system_results)
-        )
-        if self.mqtt_system_id is None:
-            self.mqtt_system_id, self.mqtt_device_serial = resolved_system_id, resolved_device_serial
-        elif (resolved_system_id, resolved_device_serial) != (
-            self.mqtt_system_id,
-            self.mqtt_device_serial,
-        ) and (resolved_system_id, resolved_device_serial) != self._mqtt_system_last_warned:
+        resolved = self._resolve_mqtt_system(selected_system_ids, dict(system_results))
+        if self.mqtt_system is None:
+            self.mqtt_system = resolved
+        elif resolved != self.mqtt_system and resolved != self._mqtt_system_last_warned:
             _LOGGER.warning(
                 "Ignoring changed Jackery MQTT resolution for configured "
                 "system_id=%s: was device serial=%s, now device serial=%s; "
                 "this does not change which system is configured for MQTT "
                 "(reload the integration entry to re-establish the "
                 "connection if this persists)",
-                self.mqtt_system_id,
-                self.mqtt_device_serial,
-                resolved_device_serial,
+                self.mqtt_system.system_id,
+                self.mqtt_system.device_serial,
+                resolved.device_serial if resolved is not None else "",
             )
-            self._mqtt_system_last_warned = (resolved_system_id, resolved_device_serial)
+            self._mqtt_system_last_warned = resolved
 
         bundles: dict[str, dict[str, Any]] = {}
         for system_id, bundle in system_results:
@@ -1623,7 +1639,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         selected_system_ids: Iterable[str],
         bundles_by_id: Mapping[str, Mapping[str, Any]],
-    ) -> tuple[str | None, str]:
+    ) -> JackeryMqttSystem | None:
         """Resolve the explicitly configured MQTT system for this refresh cycle.
 
         The Jackery MQTT broker connection is only ever subscribed to one
@@ -1638,8 +1654,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         choice stored in CONF_MQTT_SYSTEM_ID (set via the config/reconfigure
         flow, with a migration default for existing entries) - this method
         looks that one id up rather than inferring/iterating over
-        candidates. Returns (None, "") whenever the configured system can't
-        be used this cycle: not configured at all, configured but no longer
+        candidates. Returns None whenever the configured system can't be
+        used this cycle: not configured at all, configured but no longer
         present in selected_system_ids (e.g. deselected via reconfigure, or
         dropped by the account), or present but its bundle has no resolvable
         device serial. __init__.py's ConfigEntryNotReady handling treats all
@@ -1647,17 +1663,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         configured_system_id = self.config_entry.options.get(CONF_MQTT_SYSTEM_ID)
         if not configured_system_id:
-            return None, ""
+            return None
         configured_system_id = str(configured_system_id)
         if configured_system_id not in {str(system_id) for system_id in selected_system_ids}:
-            return None, ""
+            return None
         bundle = bundles_by_id.get(configured_system_id)
         if not isinstance(bundle, Mapping):
-            return None, ""
+            return None
         device_sn = self._extract_system_device_sn(bundle)
         if not device_sn:
-            return None, ""
-        return configured_system_id, device_sn
+            return None
+        return JackeryMqttSystem(system_id=configured_system_id, device_serial=device_sn)
 
     def is_mqtt_system(self, system_id: str) -> bool:
         """Return whether MQTT telemetry/controls are enabled for this system.
@@ -1667,7 +1683,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         broker; every other selected system remains REST-only until
         multi-system MQTT support ships.
         """
-        return self.mqtt_system_id is not None and str(system_id) == self.mqtt_system_id
+        return self.mqtt_system is not None and str(system_id) == self.mqtt_system.system_id
 
     def _resolve_system_day_key(self, system_id: str) -> str:
         """Return the current local day key for a selected system."""

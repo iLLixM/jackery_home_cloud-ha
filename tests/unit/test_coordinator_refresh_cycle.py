@@ -9,7 +9,7 @@ Covers two related properties:
   proves this for `_resolve_mqtt_system` in isolation (a pure function);
   this file proves the same property through the real multi-poll refresh
   cycle - the only place the freeze itself
-  (`if self.mqtt_system_id is None: ...`) actually lives.
+  (`if self.mqtt_system is None: ...`) actually lives.
 - (discussion #6, item 1, "Explicit selection of the MQTT-enabled system")
   which system is even a candidate is now driven by CONF_MQTT_SYSTEM_ID in
   the config entry's options, not inferred - every test below that needs
@@ -29,7 +29,9 @@ from custom_components.jackery_home_cloud.const import (
     DOMAIN,
 )
 from custom_components.jackery_home_cloud.coordinator import (
+    _MQTT_SYSTEM_NOT_YET_WARNED,
     JackeryHomeCloudCoordinator,
+    JackeryMqttSystem,
 )
 from custom_components.jackery_home_cloud.exceptions import JackeryHomeApiError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -88,8 +90,7 @@ class TestMqttSystemFreezeAcrossPolls:
         await coordinator.async_refresh()
 
         assert coordinator.last_update_success is True
-        assert coordinator.mqtt_system_id == SYSTEM_A
-        assert coordinator.mqtt_device_serial == "SN-A"
+        assert coordinator.mqtt_system == JackeryMqttSystem(system_id=SYSTEM_A, device_serial="SN-A")
 
     async def test_configured_system_not_in_selected_set_stays_unresolved(self, hass):
         """A configured id that isn't (or is no longer) among this cycle's
@@ -101,8 +102,7 @@ class TestMqttSystemFreezeAcrossPolls:
         await coordinator.async_refresh()
 
         assert coordinator.last_update_success is True
-        assert coordinator.mqtt_system_id is None
-        assert coordinator.mqtt_device_serial == ""
+        assert coordinator.mqtt_system is None
 
     async def test_changed_rest_ordering_on_later_poll_does_not_switch_system(self, hass):
         client = _make_client(
@@ -114,17 +114,16 @@ class TestMqttSystemFreezeAcrossPolls:
         coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
 
         await coordinator.async_refresh()
-        assert coordinator.mqtt_system_id == SYSTEM_A
+        assert coordinator.mqtt_system == JackeryMqttSystem(system_id=SYSTEM_A, device_serial="SN-A")
 
         await coordinator.async_refresh()
-        assert coordinator.mqtt_system_id == SYSTEM_A
-        assert coordinator.mqtt_device_serial == "SN-A"
+        assert coordinator.mqtt_system == JackeryMqttSystem(system_id=SYSTEM_A, device_serial="SN-A")
 
     async def test_configured_system_losing_its_serial_on_a_later_poll_stays_frozen(self, hass):
-        """Once frozen, mqtt_system_id/mqtt_device_serial are never
-        re-resolved even if the configured system can no longer be
-        resolved on a later poll - only a fresh coordinator instance (i.e.
-        a config entry reload) re-resolves.
+        """Once frozen, coordinator.mqtt_system is never re-resolved even if
+        the configured system can no longer be resolved on a later poll -
+        only a fresh coordinator instance (i.e. a config entry reload)
+        re-resolves.
         """
         client = _make_client(
             [
@@ -135,18 +134,21 @@ class TestMqttSystemFreezeAcrossPolls:
         coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
 
         await coordinator.async_refresh()
-        assert coordinator.mqtt_system_id == SYSTEM_A
+        assert coordinator.mqtt_system == JackeryMqttSystem(system_id=SYSTEM_A, device_serial="SN-A")
 
         await coordinator.async_refresh()
-        assert coordinator.mqtt_system_id == SYSTEM_A
-        assert coordinator.mqtt_device_serial == "SN-A"
+        assert coordinator.mqtt_system == JackeryMqttSystem(system_id=SYSTEM_A, device_serial="SN-A")
 
     async def test_warning_is_only_recorded_once_for_a_persistently_different_resolution(self, hass):
         """When the configured system stops resolving a serial on a later
         poll, the frozen value is kept (previous test) but the divergent
-        *would-be* resolution - now always (None, "") since only the
-        configured system is ever a candidate - is logged once, not on
-        every poll."""
+        *would-be* resolution - now always None since only the configured
+        system is ever a candidate - is logged once, not on every poll.
+
+        `_mqtt_system_last_warned` starts at the `_MQTT_SYSTEM_NOT_YET_WARNED`
+        sentinel rather than `None`, precisely so this divergent-resolution-
+        equals-None case is distinguishable from "haven't warned yet".
+        """
         client = _make_client(
             [
                 [_system(SYSTEM_A, "SN-A"), _system(SYSTEM_B, "SN-B")],
@@ -155,11 +157,11 @@ class TestMqttSystemFreezeAcrossPolls:
         )
         coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
         await coordinator.async_refresh()
-        assert coordinator._mqtt_system_last_warned is None
+        assert coordinator._mqtt_system_last_warned is _MQTT_SYSTEM_NOT_YET_WARNED
 
         await coordinator.async_refresh()
         first_warned = coordinator._mqtt_system_last_warned
-        assert first_warned == (None, "")
+        assert first_warned is None
 
         await coordinator.async_refresh()
         # Same divergent resolution again - _mqtt_system_last_warned must

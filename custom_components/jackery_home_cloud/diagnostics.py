@@ -45,6 +45,9 @@ async def async_get_config_entry_diagnostics(
         if coordinator is not None
         else {}
     )
+    mqtt_system = getattr(coordinator, "mqtt_system", None)
+    resolved_system_id = mqtt_system.system_id if mqtt_system is not None else None
+    resolved_device_serial = mqtt_system.device_serial if mqtt_system is not None else ""
 
     return {
         "entry": {
@@ -54,8 +57,8 @@ async def async_get_config_entry_diagnostics(
         "mqtt": {
             "enabled": bool(entry.options.get(CONF_ENABLE_MQTT, False)),
             "configured_system_id": entry.options.get(CONF_MQTT_SYSTEM_ID),
-            "resolved_system_id": getattr(coordinator, "mqtt_system_id", None),
-            "resolved_device_serial": getattr(coordinator, "mqtt_device_serial", ""),
+            "resolved_system_id": resolved_system_id,
+            "resolved_device_serial": resolved_device_serial,
             "connection_state": dict(data.get("mqtt_state", {})),
             "broker_config": async_redact_data(mqtt_credentials, TO_REDACT),
         },

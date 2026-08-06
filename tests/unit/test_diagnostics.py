@@ -3,9 +3,9 @@ MQTT system in diagnostics").
 
 Constructs a `MockConfigEntry` with sensitive `data`/`options` plus a
 minimal `SimpleNamespace` standing in for `entry.runtime_data.coordinator`
-(only `.data`/`.mqtt_system_id`/`.mqtt_device_serial`/`.mqtt_credentials`
-are read by `async_get_config_entry_diagnostics`), matching this project's
-"construct minimal fakes directly" convention (see test_init_lifecycle.py's
+(only `.data`/`.mqtt_system`/`.mqtt_credentials` are read by
+`async_get_config_entry_diagnostics`), matching this project's "construct
+minimal fakes directly" convention (see test_init_lifecycle.py's
 `_FakeCoordinator`). Calls the diagnostics function directly rather than
 through any HTTP/websocket layer.
 """
@@ -26,6 +26,7 @@ from custom_components.jackery_home_cloud.const import (
     CONF_PHONE_UID,
     DOMAIN,
 )
+from custom_components.jackery_home_cloud.coordinator import JackeryMqttSystem
 
 REDACTED = "**REDACTED**"
 
@@ -58,8 +59,11 @@ def _coordinator(
     data=None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        mqtt_system_id=mqtt_system_id,
-        mqtt_device_serial=mqtt_device_serial,
+        mqtt_system=(
+            JackeryMqttSystem(system_id=mqtt_system_id, device_serial=mqtt_device_serial)
+            if mqtt_system_id is not None
+            else None
+        ),
         mqtt_credentials=mqtt_credentials or {},
         data=data
         or {
