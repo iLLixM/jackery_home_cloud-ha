@@ -23,6 +23,16 @@
           "mqtt_poll_interval": "Legt fest, wie oft aktuelle Live-Werte für Leistung, Ladezustand und AC-Ausgang aktiv über MQTT abgefragt werden. Zulässig sind 5 bis 60 Sekunden, Standardwert ist 60. Kumulative Energiezähler verwenden einen separaten, langsameren Abfragezyklus. Kürzere Intervalle erhöhen die MQTT-Datenlast für Broker und Netzwerk."
         }
       },
+      "mqtt_system": {
+        "title": "Wähle das MQTT System",
+        "description": "Es wurden mehrere Systeme im Jackery Account identifiziert. Wähle aus, welches davon MQTT-Telemetriedaten und Steuerbefehle empfangen soll. Die anderen Systeme bleiben auf REST-API-Kommunikation beschränkt.",
+        "data": {
+          "mqtt_system_id": "MQTT-System"
+        },
+        "data_description": {
+          "mqtt_system_id": "Es kann derzeit nur ein System mit dem Jackery-MQTT-Broker verbunden werden."
+        }
+      },
       "reauth_confirm": {
         "title": "Erneut authentifizieren",
         "description": "Die Zugangsdaten für Jackery Home Cloud müssen aktualisiert werden.",
@@ -56,6 +66,16 @@
         "data_description": {
           "mqtt_poll_interval": "Legt fest, wie oft aktuelle Live-Werte für Leistung, Ladezustand und AC-Ausgang aktiv über MQTT abgefragt werden. Zulässig sind 5 bis 60 Sekunden, Standardwert ist 60. Kumulative Energiezähler verwenden einen separaten, langsameren Abfragezyklus. Kürzere Intervalle erhöhen die MQTT-Datenlast für Broker und Netzwerk."
         }
+      },
+      "reconfigure_mqtt_system": {
+        "title": "Wähle das MQTT System",
+        "description": "Es wurden mehrere Systeme im Jackery Account identifiziert. Wähle aus, welches davon MQTT-Telemetriedaten und Steuerbefehle empfangen soll. Die anderen Systeme bleiben auf REST-API-Kommunikation beschränkt.",
+        "data": {
+          "mqtt_system_id": "MQTT-System"
+        },
+        "data_description": {
+          "mqtt_system_id": "Es kann derzeit nur ein System mit dem Jackery-MQTT-Broker verbunden werden."
+        }
       }
     },
     "error": {
@@ -88,6 +108,16 @@
         },
         "data_description": {
           "mqtt_poll_interval": "Legt fest, wie oft aktuelle Live-Werte für Leistung, Ladezustand und AC-Ausgang aktiv über MQTT abgefragt werden. Zulässig sind 5 bis 60 Sekunden, Standardwert ist 60. Kumulative Energiezähler verwenden einen separaten, langsameren Abfragezyklus. Kürzere Intervalle erhöhen die MQTT-Datenlast für Broker und Netzwerk."
+        }
+      },
+      "mqtt_system": {
+        "title": "Wähle das MQTT System",
+        "description": "Es wurden mehrere Systeme im Jackery Account identifiziert. Wähle aus, welches davon MQTT-Telemetriedaten und Steuerbefehle empfangen soll. Die anderen Systeme bleiben auf REST-API-Kommunikation beschränkt.",
+        "data": {
+          "mqtt_system_id": "MQTT-System"
+        },
+        "data_description": {
+          "mqtt_system_id": "Es kann derzeit nur ein System mit dem Jackery-MQTT-Broker verbunden werden."
         }
       }
     },
