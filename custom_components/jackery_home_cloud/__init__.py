@@ -21,6 +21,7 @@ from .const import (
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
     CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
     CONF_MQTT_TLS_INSECURE,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -237,14 +238,23 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         options[CONF_MQTT_POLL_INTERVAL] = DEFAULT_MQTT_POLL_INTERVAL_SECONDS
         changed = True
     if CONF_MQTT_SYSTEM_ID not in options:
-        # Best-effort default for existing entries: mirrors the old implicit
-        # heuristic's most common outcome (first configured system) without
-        # needing live API data at migration time. Safe even if that system
-        # later proves unresolvable - falls through to the existing
-        # ConfigEntryNotReady retry path, same as today. Users can change
-        # this via Reconfigure at any time.
         selected = options.get(CONF_SELECTED_SYSTEMS) or []
-        options[CONF_MQTT_SYSTEM_ID] = str(selected[0]) if selected else None
+        if len(selected) > 1:
+            # Multiple candidates: the old implicit heuristic picked the
+            # first selected system with a resolvable MQTT device serial,
+            # which requires live API data this migration step doesn't
+            # have. Guessing selected[0] here can freeze an
+            # already-working multi-system entry into permanent
+            # ConfigEntryNotReady if that particular system turns out not
+            # to expose an MQTT serial. Defer instead: the coordinator's
+            # first successful refresh has the bundle data needed to
+            # replicate the old heuristic exactly once (see
+            # _resolve_pending_mqtt_system_selection in coordinator.py).
+            options[CONF_MQTT_SYSTEM_ID] = None
+            options[CONF_MQTT_SYSTEM_SELECTION_PENDING] = True
+        else:
+            # Zero or one selected system: no ambiguity, no need to defer.
+            options[CONF_MQTT_SYSTEM_ID] = str(selected[0]) if selected else None
         changed = True
 
     if entry.minor_version < _CONFIG_ENTRY_MINOR_VERSION:

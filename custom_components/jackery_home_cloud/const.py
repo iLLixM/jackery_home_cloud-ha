@@ -12,6 +12,12 @@ CONF_PASSWORD = "password"
 CONF_PHONE_UID = "phone_uid"
 CONF_SELECTED_SYSTEMS = "selected_systems"
 CONF_MQTT_SYSTEM_ID = "mqtt_system_id"
+# Set by async_migrate_entry() when a migrated entry has more than one
+# selected system and CONF_MQTT_SYSTEM_ID can't be defaulted without live
+# API data (see coordinator._resolve_pending_mqtt_system_selection). Cleared
+# once the coordinator's first successful refresh resolves and persists a
+# real CONF_MQTT_SYSTEM_ID.
+CONF_MQTT_SYSTEM_SELECTION_PENDING = "mqtt_system_selection_pending"
 CONF_ENABLE_MQTT = "enable_mqtt"
 CONF_CRYPTO_KEY = "crypto_key"
 CONF_MQTT_DEBUG_RAW = "mqtt_debug_raw"

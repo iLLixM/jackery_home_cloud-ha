@@ -21,6 +21,7 @@ from .api.client import JackeryApiClient
 from .const import (
     CONF_ACCOUNT,
     CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -266,6 +267,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for system_id in selected_system_ids
             )
         )
+
+        if self.config_entry.options.get(CONF_MQTT_SYSTEM_SELECTION_PENDING):
+            self._resolve_pending_mqtt_system_selection(selected_system_ids, dict(system_results))
 
         # The configured MQTT system is resolved once per coordinator
         # instance (i.e. once per config entry load) and then frozen: the
@@ -1687,6 +1691,38 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return the MQTT command topic for a device serial."""
         from .const import MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE
         return MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=device_sn)
+
+    def _resolve_pending_mqtt_system_selection(
+        self,
+        selected_system_ids: Iterable[str],
+        bundles_by_id: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Resolve and persist CONF_MQTT_SYSTEM_ID once, for a deferred migration.
+
+        async_migrate_entry() defers CONF_MQTT_SYSTEM_ID (leaving it None
+        and setting CONF_MQTT_SYSTEM_SELECTION_PENDING) for entries migrated
+        with more than one selected system, since it has no live API data
+        to tell which one actually exposes a resolvable MQTT device serial.
+        This runs on every refresh while the pending marker is set, using
+        the bundle data this refresh just fetched to replicate the old
+        pre-explicit-selection heuristic exactly once: the first selected
+        system (in CONF_SELECTED_SYSTEMS order) with a resolvable serial.
+
+        If no selected system resolves this cycle (e.g. a transient REST
+        gap), the pending marker is left in place and this simply retries
+        on the next refresh rather than persisting a guess.
+        """
+        for system_id in selected_system_ids:
+            bundle = bundles_by_id.get(str(system_id))
+            if not isinstance(bundle, Mapping):
+                continue
+            if not self._extract_system_device_sn(bundle):
+                continue
+            new_options = dict(self.config_entry.options)
+            new_options[CONF_MQTT_SYSTEM_ID] = str(system_id)
+            new_options.pop(CONF_MQTT_SYSTEM_SELECTION_PENDING, None)
+            self.hass.config_entries.async_update_entry(self.config_entry, options=new_options)
+            return
 
     def _resolve_mqtt_system(
         self,

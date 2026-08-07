@@ -20,8 +20,13 @@ attribute (`self.mqtt_system`, a `JackeryMqttSystem | None` - see discussion
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
-from custom_components.jackery_home_cloud.const import CONF_MQTT_SYSTEM_ID
+from custom_components.jackery_home_cloud.const import (
+    CONF_ENABLE_MQTT,
+    CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
+)
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
     JackeryMqttSystem,
@@ -152,3 +157,80 @@ class TestIsMqttSystem:
     def test_compares_via_str_coercion(self):
         coordinator = _make_coordinator(mqtt_system_id="123")
         assert coordinator.is_mqtt_system(123) is True
+
+
+def _make_pending_coordinator(*, options: dict) -> tuple[JackeryHomeCloudCoordinator, Mock]:
+    coordinator = object.__new__(JackeryHomeCloudCoordinator)
+    coordinator.config_entry = SimpleNamespace(options=dict(options))
+    update_entry = Mock()
+    coordinator.hass = SimpleNamespace(config_entries=SimpleNamespace(async_update_entry=update_entry))
+    return coordinator, update_entry
+
+
+class TestResolvePendingMqttSystemSelection:
+    """Tests for _resolve_pending_mqtt_system_selection (discussion #6,
+    reviewer follow-up on item 1): async_migrate_entry() defers
+    CONF_MQTT_SYSTEM_ID for entries migrated with more than one selected
+    system rather than guessing selected[0], since it has no live API data
+    to know which one actually exposes a resolvable MQTT serial. This
+    method runs on the coordinator's first (and any subsequent, until
+    resolved) refresh to replicate the old "first resolvable wins"
+    heuristic exactly once, using real bundle data.
+    """
+
+    def test_persists_first_selected_system_with_resolvable_serial(self):
+        coordinator, update_entry = _make_pending_coordinator(
+            options={CONF_MQTT_SYSTEM_ID: None, CONF_MQTT_SYSTEM_SELECTION_PENDING: True}
+        )
+        bundles = {
+            "sys1": {},  # no resolvable serial
+            "sys2": {"main_device_serial": "SN2"},
+        }
+
+        coordinator._resolve_pending_mqtt_system_selection(["sys1", "sys2"], bundles)
+
+        update_entry.assert_called_once()
+        _, kwargs = update_entry.call_args
+        assert kwargs["options"][CONF_MQTT_SYSTEM_ID] == "sys2"
+        assert CONF_MQTT_SYSTEM_SELECTION_PENDING not in kwargs["options"]
+
+    def test_follows_selected_system_order_not_bundle_dict_order(self):
+        coordinator, update_entry = _make_pending_coordinator(
+            options={CONF_MQTT_SYSTEM_ID: None, CONF_MQTT_SYSTEM_SELECTION_PENDING: True}
+        )
+        bundles = {
+            "sys1": {"main_device_serial": "SN1"},
+            "sys2": {"main_device_serial": "SN2"},
+        }
+
+        coordinator._resolve_pending_mqtt_system_selection(["sys2", "sys1"], bundles)
+
+        _, kwargs = update_entry.call_args
+        assert kwargs["options"][CONF_MQTT_SYSTEM_ID] == "sys2"
+
+    def test_leaves_pending_marker_when_no_system_resolvable_yet(self):
+        """A transient gap (e.g. a REST hiccup) must not persist a guess -
+        retry on the next refresh instead."""
+        coordinator, update_entry = _make_pending_coordinator(
+            options={CONF_MQTT_SYSTEM_ID: None, CONF_MQTT_SYSTEM_SELECTION_PENDING: True}
+        )
+        bundles = {"sys1": {}, "sys2": {}}
+
+        coordinator._resolve_pending_mqtt_system_selection(["sys1", "sys2"], bundles)
+
+        update_entry.assert_not_called()
+
+    def test_preserves_unrelated_options(self):
+        coordinator, update_entry = _make_pending_coordinator(
+            options={
+                CONF_MQTT_SYSTEM_ID: None,
+                CONF_MQTT_SYSTEM_SELECTION_PENDING: True,
+                CONF_ENABLE_MQTT: True,
+            }
+        )
+        bundles = {"sys1": {"main_device_serial": "SN1"}}
+
+        coordinator._resolve_pending_mqtt_system_selection(["sys1"], bundles)
+
+        _, kwargs = update_entry.call_args
+        assert kwargs["options"][CONF_ENABLE_MQTT] is True

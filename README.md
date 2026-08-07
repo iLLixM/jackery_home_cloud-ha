@@ -253,7 +253,7 @@ Because the Jackery MQTT broker connection only ever subscribes to a single devi
 - MQTT subscriptions, polling, live-value overlays, diagnostics, controls, and writes are limited to the selected MQTT system.
 - The choice can be changed at any time via Reconfigure (or the options flow), and takes effect immediately - both flows reload the integration entry automatically.
 
-Existing installations upgraded from an earlier release are migrated automatically: the first system in your existing system selection is picked as the initial MQTT system, and can be changed via Reconfigure at any time.
+Existing installations upgraded from an earlier release are migrated automatically. With a single selected system, it's picked immediately. With more than one, the choice is resolved on the first refresh after upgrading (the first selected system that exposes a usable MQTT connection, matching the previous automatic behavior) rather than guessed at migration time - this avoids picking a system that turns out not to support MQTT and getting stuck retrying setup. Either way, the result can be changed via Reconfigure at any time.
 
 The currently configured and resolved MQTT system is exposed in Settings -> Devices & Services -> Jackery Home Cloud -> Download diagnostics.
 

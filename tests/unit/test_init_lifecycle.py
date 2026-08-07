@@ -29,6 +29,7 @@ from custom_components.jackery_home_cloud.const import (
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
     CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
@@ -282,9 +283,10 @@ class TestAsyncMigrateEntry:
 
         assert CONF_SELECTED_SYSTEMS not in entry.data
         assert entry.options[CONF_SELECTED_SYSTEMS] == ["1", "2"]
-        # No CONF_MQTT_SYSTEM_ID stored yet -> defaults to the first system
-        # in the now-migrated selection (see async_migrate_entry).
-        assert entry.options[CONF_MQTT_SYSTEM_ID] == "1"
+        # More than one selected system -> deferred rather than guessed
+        # (see test_defers_mqtt_system_id_when_multiple_systems_selected).
+        assert entry.options[CONF_MQTT_SYSTEM_ID] is None
+        assert entry.options[CONF_MQTT_SYSTEM_SELECTION_PENDING] is True
 
     async def test_missing_option_defaults_are_filled_in(self, hass):
         entry = MockConfigEntry(
@@ -306,7 +308,24 @@ class TestAsyncMigrateEntry:
         # system to.
         assert entry.options[CONF_MQTT_SYSTEM_ID] is None
 
-    async def test_seeds_mqtt_system_id_from_first_selected_system(self, hass):
+    async def test_seeds_mqtt_system_id_directly_when_one_system_selected(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options={CONF_SELECTED_SYSTEMS: ["7"]},
+            version=1,
+            minor_version=4,
+        )
+        entry.add_to_hass(hass)
+
+        await integration.async_migrate_entry(hass, entry)
+
+        # No ambiguity with a single selected system -> seeded directly,
+        # no deferral needed.
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "7"
+        assert CONF_MQTT_SYSTEM_SELECTION_PENDING not in entry.options
+
+    async def test_defers_mqtt_system_id_when_multiple_systems_selected(self, hass):
         entry = MockConfigEntry(
             domain=DOMAIN,
             data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
@@ -318,7 +337,13 @@ class TestAsyncMigrateEntry:
 
         await integration.async_migrate_entry(hass, entry)
 
-        assert entry.options[CONF_MQTT_SYSTEM_ID] == "2"
+        # Migration has no live API data to know which selected system
+        # actually exposes a resolvable MQTT serial -> deferred to the
+        # coordinator's first successful refresh instead of guessing
+        # selected[0] (see
+        # test_coordinator_mqtt_system_selection.py::TestResolvePendingMqttSystemSelection).
+        assert entry.options[CONF_MQTT_SYSTEM_ID] is None
+        assert entry.options[CONF_MQTT_SYSTEM_SELECTION_PENDING] is True
 
     async def test_leaves_existing_mqtt_system_id_untouched(self, hass):
         entry = MockConfigEntry(
