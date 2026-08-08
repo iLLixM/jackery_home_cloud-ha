@@ -22,7 +22,7 @@
 
 ### Example Request
 
-``` json
+```json
 {
   "encrypted": false,
   "userEnd": "HOME",
@@ -38,16 +38,21 @@
 
 ### Notes
 
--   `encrypted: false` works (app uses `true`)
--   `phoneUid` required but arbitrary
--   Returns:
-    -   `accessToken`
-    -   `refreshToken`
+- `encrypted: false` works for direct client integrations.
+- The official app has been observed using `encrypted: true`.
+- `phoneUid` is required but does not appear to need to match a physical device.
+- The login response includes:
+  - `accessToken`
+  - `refreshToken`
 
 ### Auth Header
 
     Authorization: Bearer <accessToken>
     userend: HOME
+
+All API calls are transported over HTTPS. References to plain-text values in
+this document describe their representation inside the authenticated HTTPS
+payload and do not mean that they are sent over the network without TLS.
 
 ------------------------------------------------------------------------
 
@@ -73,7 +78,7 @@
 
     POST /v1/app/monitor/
 
-``` json
+```json
 {
   "systemId": "<systemId>"
 }
@@ -112,13 +117,13 @@ Includes:
 
 ### Important Fields
 
--   `pvChargeAmount` -- Solar generation\
--   `batteryCharge` -- Battery charged\
--   `batteryDischarge` -- Battery discharged\
--   `gridOut` -- Exported to grid\
--   `gridInput` -- Imported from grid\
--   `pv1TotalGen` -- PV string 1\
--   `pv2TotalGen` -- PV string 2
+- `pvChargeAmount` -- Solar generation
+- `batteryCharge` -- Battery charged
+- `batteryDischarge` -- Battery discharged
+- `gridOut` -- Exported to grid
+- `gridInput` -- Imported from grid
+- `pv1TotalGen` -- PV string 1
+- `pv2TotalGen` -- PV string 2
 
 ------------------------------------------------------------------------
 
@@ -128,28 +133,99 @@ Includes:
 
 ### Observed Types
 
--   2 -- Daily\
--   3 -- Weekly / Range\
--   4 -- Monthly
+- `2` -- Daily
+- `3` -- Weekly / Range
+- `4` -- Monthly
 
 ------------------------------------------------------------------------
 
-## 📶 MQTT (Realtime Push)
+## 📶 MQTT (Realtime Telemetry and Control)
 
-### Get MQTT Credentials
+MQTT is used as a direct realtime transport in addition to the REST API.
 
-    GET /v1/idc/config/mqttServer
+The Home Assistant integration establishes its own TLS connection to the
+Jackery-hosted MQTT broker. It does not depend on the Home Assistant MQTT
+integration.
 
-Example:
+### Get MQTT Credentials - API v2 (preferred)
 
-``` json
+    GET /v2/idc/config/mqttServer
+
+Full EU URL:
+
+    https://prodeu-energymanagement-api.hello-tech.com:8000/geneverse-iot-gateway/geneverse-iot-home/v2/idc/config/mqttServer
+
+Example response:
+
+```json
 {
-  "mqttServer": "...",
+  "mqttServer": "prodeu-energymanagement-mqtts.hello-tech.com",
   "mqttPort": "8883",
   "mqttUserName": "...",
   "mqttPassword": "..."
 }
 ```
+
+Observed behavior:
+
+- `mqttUserName` is returned by the API.
+- `mqttPassword` is returned in plain text inside the authenticated HTTPS
+  response and can be passed directly to the MQTT client.
+
+### Get MQTT Credentials - API v1 (legacy fallback)
+
+    GET /v1/idc/config/mqttServer
+
+Full EU URL:
+
+    https://prodeu-energymanagement-api.hello-tech.com:8000/geneverse-iot-gateway/geneverse-iot-home/v1/idc/config/mqttServer
+
+The response uses the same general structure:
+
+```json
+{
+  "mqttServer": "prodeu-energymanagement-mqtts.hello-tech.com",
+  "mqttPort": "8883",
+  "mqttUserName": "...",
+  "mqttPassword": "..."
+}
+```
+
+Observed behavior differs from v2:
+
+- the legacy `mqttPassword` value is encrypted / encoded,
+- it is not directly usable as the MQTT broker password,
+
+### MQTT credential handling summary
+
+| API | MQTT username | MQTT password | Additional decoding |
+|---|---|---|---|
+| `/v2/idc/config/mqttServer` | returned by API | plain text in HTTPS payload | No |
+| `/v1/idc/config/mqttServer` | returned by API | encrypted / encoded | Yes |
+
+Current integration order:
+
+1. Try `/v2/idc/config/mqttServer`.
+2. If v2 fails or returns incomplete broker configuration, fall back to
+   `/v1/idc/config/mqttServer`.
+3. Apply the legacy credential-decoding path only for the v1 result.
+
+> **Security note:**  
+> "Plain text" here refers only to the value contained inside the HTTPS API
+> response. The REST request and response are still protected in transit by
+> HTTPS/TLS.
+
+### MQTT broker
+
+Observed broker configuration:
+
+| Property | Value |
+|---|---|
+| Protocol | MQTT over TLS |
+| Port | `8883` |
+| Authentication | Username + password |
+| Separate MQTT token | Not observed |
+| EU broker | `prodeu-energymanagement-mqtts.hello-tech.com` |
 
 ------------------------------------------------------------------------
 
@@ -176,15 +252,37 @@ Example:
 
 ## ⚡ Integration Notes
 
--   Cloud-based API
--   Polling and MQTT possible
--   Used in Home Assistant integration
+- Cloud-based API
+- Hybrid REST and MQTT architecture
+- REST is used for authentication and system/device discovery
+- MQTT is used for realtime telemetry and supported controls
+- MQTT broker credentials are preferably retrieved through the v2 API
+- v1 MQTT credential retrieval remains available as a legacy fallback
+- MQTT uses TLS on port 8883
+- Active MQTT polling and spontaneous MQTT reports are both supported
+- Selected MQTT writes are verified against fresh device responses
+- Used by the Jackery Home Cloud Home Assistant integration
 
 ------------------------------------------------------------------------
 
 ## 🚧 Known Limitations
 
--   Incomplete reverse engineering
--   `encrypted=true` login (which is probably APP-integrated-only) is not implemented, traffic is transport encrypted via HTTPS
--   MQTT topics not fully decoded
--   API may change anytime
+- Reverse engineering is incomplete and based on observed app/device behavior.
+- The API and MQTT protocol are undocumented and may change at any time.
+- `encrypted=true` login used by the app is not required by the current direct
+  integration path; login with `encrypted=false` has been confirmed to work.
+- MQTT topic, meter, and control mappings may differ by device model, firmware,
+  cloud region, or future backend changes.
+- MQTT support currently targets one primary system per Home Assistant config
+  entry; additional systems remain REST-only.
+- The EMS battery-power value is expected to represent system-level battery
+  power, including additional battery packs where supported, but broader model
+  validation is still useful.
+- The direction/sign logic of some derived power values, especially AC main
+  power, is based on observed meter relationships and may require further
+  validation across operating modes.
+- Writable controls can change real device behavior and should be used with
+  appropriate care.
+- Debug logs and captured MQTT payloads may contain device identifiers,
+  operational data, account metadata, or credentials and should be redacted
+  before sharing.
