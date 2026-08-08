@@ -1,4 +1,4 @@
-# Jackery Home Cloud API (Unofficial – v2.10.22)
+# Jackery Home Cloud API (Unofficial – v2.10.23)
 
 ## Disclaimer
 
