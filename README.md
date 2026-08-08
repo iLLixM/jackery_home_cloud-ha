@@ -7,7 +7,7 @@ This integration connects to the Jackery cloud backend, discovers systems linked
 > [!WARNING]
 > This project is based on reverse-engineered API and MQTT behavior observed from the Jackery Home Android app and supported hardware. It is unofficial, may be incomplete, and can break at any time if Jackery changes its backend, app, firmware, MQTT topics, meter semantics, or certificate infrastructure.
 
-See the [API readme](docs/api/README.md) for a quick overview.
+See the [API readme](docs/api.md) for a quick overview.
 
 See the comprehensive [API documentation](docs/jackery_home_cloud_api_readme.md) for observed API calls and implementation notes.
 

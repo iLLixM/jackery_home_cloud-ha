@@ -896,7 +896,11 @@ GET /geneverse-iot-home/v1/home/captcha
 
 ## 11. MQTT Configuration
 
-### 11.1 MQTT Server Config
+The Jackery Home Cloud API exposes MQTT broker connection information through the `idc/config/mqttServer` endpoint.
+
+Two API versions have been identified. Both return the same general broker configuration, but they differ in how the MQTT credentials are represented.
+
+### 11.1 MQTT Server Config - API v1
 
 ```text
 GET /geneverse-iot-home/v1/idc/config/mqttServer
@@ -904,8 +908,33 @@ GET /geneverse-iot-home/v1/idc/config/mqttServer
 
 Purpose:
 - retrieve MQTT connection settings for the authenticated user / system context
+- legacy MQTT credential endpoint
+
+Example EU URL:
+
+```text
+https://prodeu-energymanagement-api.hello-tech.com:8000/geneverse-iot-gateway/geneverse-iot-home/v1/idc/config/mqttServer
+```
+
+### 11.2 MQTT Server Config - API v2
+
+```text
+GET /geneverse-iot-home/v2/idc/config/mqttServer
+```
+
+Purpose:
+- retrieve MQTT connection settings for the authenticated user / system context
+- current preferred MQTT credential endpoint
+
+Example EU URL:
+
+```text
+https://prodeu-energymanagement-api.hello-tech.com:8000/geneverse-iot-gateway/geneverse-iot-home/v2/idc/config/mqttServer
+```
 
 ### Response Shape
+
+Both versions return the same general response structure:
 
 ```json
 {
@@ -916,14 +945,37 @@ Purpose:
 }
 ```
 
+### Credential Handling
+
+Observed behavior differs between the two API versions:
+
+| API endpoint | MQTT username | MQTT password | Additional credential decryption required |
+|---|---|---|---|
+| `v1/idc/config/mqttServer` | returned by API | encrypted / encoded | Yes |
+| `v2/idc/config/mqttServer` | returned by API | plaintext | No |
+
+The current integration therefore prefers the endpoints in the following order:
+
+1. `GET /geneverse-iot-home/v2/idc/config/mqttServer`
+2. `GET /geneverse-iot-home/v1/idc/config/mqttServer` as legacy fallback
+
+If the `v2` request succeeds and returns a complete MQTT configuration, the returned credentials are treated as directly usable broker credentials. If `v2` fails or returns incomplete data, the integration can fall back to `v1` and apply the legacy credential-decoding path.
+
+> **Security note:**  
+> "Plaintext" in this context describes the representation of the MQTT credential inside the authenticated HTTPS API response. It does **not** mean that the credential is transmitted over the network without transport encryption. The REST request itself is protected by HTTPS/TLS.
+
 ### Observations
 
-- MQTT authentication currently appears to use:
+- MQTT authentication uses:
   - `mqttUserName`
   - `mqttPassword`
 - No separate MQTT token was observed in the REST traffic.
-- The app likely connects directly to the MQTT broker over TLS.
-- The actual MQTT publish/subscribe traffic was not visible as decoded application data in the mitmproxy flow.
+- The broker uses MQTT over TLS.
+- The observed broker port is `8883`.
+- The integration connects directly to the Jackery-hosted MQTT broker.
+- The `v2` endpoint removes the need for the legacy MQTT password-decryption step when its response is available.
+- The `v1` endpoint remains relevant as a backward-compatibility fallback.
+- The actual MQTT publish/subscribe traffic was not visible as decoded application data in the original mitmproxy REST flow.
 
 ---
 
@@ -959,6 +1011,9 @@ These endpoints may be extremely useful for future reverse engineering of:
 | Protocol | MQTT over TLS |
 | Port | 8883 |
 | Authentication | Username + Password |
+| MQTT config API | `v2/idc/config/mqttServer` preferred; `v1/idc/config/mqttServer` fallback |
+| v1 credential representation | MQTT password encrypted / encoded |
+| v2 credential representation | MQTT password plaintext inside HTTPS response |
 | Separate MQTT token | Not observed |
 | Broker hostname | `prodeu-energymanagement-mqtts.hello-tech.com` |
 
@@ -973,7 +1028,10 @@ Current understanding:
    - devices
    - dashboard/monitor snapshots
    - MQTT broker credentials
-3. It likely then opens a direct TLS MQTT connection to the broker for realtime data.
+3. MQTT broker credentials can currently be retrieved from:
+   - the preferred `v2` MQTT configuration endpoint, which returns directly usable credentials
+   - the legacy `v1` endpoint, which requires credential decoding
+4. It then opens a direct TLS MQTT connection to the broker for realtime data and device communication.
 
 ## Stability Assessment vs Previous Analysis
 
@@ -983,6 +1041,13 @@ The 2.10.22 flow validates previous findings:
 - required login semantics remain unchanged
 - REST system/device/monitor flow remains valid
 - MQTT credential retrieval remains valid
+
+Additional MQTT credential analysis identified:
+
+- `v2/idc/config/mqttServer` as the preferred MQTT configuration endpoint
+- plaintext MQTT credentials in the authenticated HTTPS `v2` response
+- encrypted / encoded MQTT credentials in the legacy `v1` response
+- retained `v1` support as a compatibility fallback
 
 New findings in 2.10.22 mainly include:
 
@@ -1003,13 +1068,17 @@ New findings in 2.10.22 mainly include:
 | Device list retrieval | Confirmed working |
 | Monitor snapshot retrieval | Confirmed working |
 | MQTT credential retrieval | Confirmed working |
-| MQTT topic reverse engineering | Not yet complete |
-| Writable control path | Partially identified |
+| MQTT credential retrieval via v2 | Confirmed working |
+| Plaintext MQTT credentials in v2 HTTPS response | Confirmed working / observed |
+| Legacy encrypted MQTT credentials via v1 | Confirmed / retained as fallback |
+| MQTT topic reverse engineering | Partially identified and implemented |
+| Writable control path | Partially identified and implemented |
 
 ## Recommended Next Steps
 
-1. Reverse engineer MQTT topic structure and payloads
-2. Investigate `shortcutControl/<systemId>` for writable controls
-3. Download and inspect TSL / protocol assets
-4. Add refresh-token or re-login handling in client implementations
-5. Use REST as bootstrap/discovery and MQTT as realtime transport in Home Assistant
+1. Continue reverse engineering MQTT topic structure and payloads
+2. Continue validation of writable MQTT controls and meter mappings across additional device models
+3. Investigate `shortcutControl/<systemId>` for additional REST-based writable controls
+4. Download and inspect TSL / protocol assets
+5. Add refresh-token or re-login handling in client implementations
+6. Continue using REST as bootstrap/discovery and MQTT as realtime transport in Home Assistant
