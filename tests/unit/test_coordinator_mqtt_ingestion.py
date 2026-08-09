@@ -14,6 +14,8 @@ item 6, "Event-driven write verification") - no `hass` needed. Built via
 
 from __future__ import annotations
 
+import logging
+
 from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
@@ -24,6 +26,7 @@ from custom_components.jackery_home_cloud.const import (
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
     JackeryMqttSystem,
+    _validate_and_pad_schedule_raw,
 )
 from custom_components.jackery_home_cloud.sensor import _schedule_windows
 
@@ -152,28 +155,161 @@ class TestScheduleRawValueZeroPadding:
 
 class TestScheduleWindowsDisplay:
     """sensor.py's _schedule_windows is the "consumer" half of the same
-    zero-padded raw values produced by _ingest_mqtt_live_values above."""
+    validated raw values produced by _ingest_mqtt_live_values above. It no
+    longer re-validates length/content itself - coordinator.py's
+    _validate_and_pad_schedule_raw() (see TestValidateAndPadScheduleRaw and
+    TestScheduleRawValueValidation below) is the single source of truth for
+    that, applied at ingestion time.
+    """
 
-    def test_eight_digit_raw_value_is_sliced_into_hh_mm_window(self):
+    def test_eight_digit_raw_value_is_sliced_into_slot_dict(self):
         bundle = {"charge_window_0": "06150715"}
-        assert _schedule_windows(bundle, "charge_window_") == ["06:15-07:15"]
-
-    def test_wrong_length_raw_value_is_silently_dropped(self):
-        bundle = {"charge_window_0": "615715"}  # 6 digits, never zero-padded correctly
-        assert _schedule_windows(bundle, "charge_window_") == []
+        assert _schedule_windows(bundle, "charge_window_") == [
+            {"slot": 0, "start": "06:15", "end": "07:15"}
+        ]
 
     def test_zero_slot_is_omitted(self):
         bundle = {"charge_window_0": "0", "charge_window_1": "08000900"}
-        assert _schedule_windows(bundle, "charge_window_") == ["08:00-09:00"]
+        assert _schedule_windows(bundle, "charge_window_") == [
+            {"slot": 1, "start": "08:00", "end": "09:00"}
+        ]
 
     def test_missing_slots_are_skipped_not_errored(self):
         bundle = {"charge_window_3": "10001100"}
-        assert _schedule_windows(bundle, "charge_window_") == ["10:00-11:00"]
+        assert _schedule_windows(bundle, "charge_window_") == [
+            {"slot": 3, "start": "10:00", "end": "11:00"}
+        ]
 
     def test_charge_and_discharge_prefixes_are_independent(self):
         bundle = {"charge_window_0": "06000700", "discharge_window_0": "18001900"}
-        assert _schedule_windows(bundle, "charge_window_") == ["06:00-07:00"]
-        assert _schedule_windows(bundle, "discharge_window_") == ["18:00-19:00"]
+        assert _schedule_windows(bundle, "charge_window_") == [
+            {"slot": 0, "start": "06:00", "end": "07:00"}
+        ]
+        assert _schedule_windows(bundle, "discharge_window_") == [
+            {"slot": 0, "start": "18:00", "end": "19:00"}
+        ]
+
+
+class TestValidateAndPadScheduleRaw:
+    """Pure boundary-case tests for coordinator.py's schedule raw-value
+    validator, independent of the MQTT ingestion plumbing."""
+
+    def test_empty_slot_sentinel_passes_unchanged(self):
+        assert _validate_and_pad_schedule_raw("0") == "0"
+
+    def test_short_value_is_zero_padded(self):
+        assert _validate_and_pad_schedule_raw("6150715") == "06150715"
+
+    def test_valid_boundaries_are_accepted(self):
+        assert _validate_and_pad_schedule_raw("00000001") == "00000001"
+        assert _validate_and_pad_schedule_raw("23002359") == "23002359"
+
+    def test_non_digit_value_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("6a50715") is None
+
+    def test_too_long_value_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("061507150") is None
+
+    def test_start_hour_out_of_range_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("25150715") is None
+
+    def test_end_hour_out_of_range_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("06152400") is None
+
+    def test_start_minute_out_of_range_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("06990715") is None
+
+    def test_end_minute_out_of_range_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("06150799") is None
+
+    def test_overnight_spanning_window_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("22000600") is None
+
+    def test_zero_duration_window_is_rejected(self):
+        assert _validate_and_pad_schedule_raw("06000600") is None
+
+
+class TestScheduleRawValueValidation:
+    """Ingestion-level validation (coordinator.py): an invalid raw schedule
+    value is logged and ignored, never accepted with a garbage/normalized
+    value, and never overwrites a previously cached valid value for the
+    same slot."""
+
+    def test_non_digit_raw_value_is_rejected_and_logged(self, caplog):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "6a50715"]])
+
+        with caplog.at_level(logging.WARNING):
+            coordinator._ingest_mqtt_live_values(message)
+
+        assert "charge_window_0" not in coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+        assert "invalid" in caplog.text.lower()
+
+    def test_too_long_raw_value_is_rejected_and_logged(self, caplog):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "061507150"]])
+
+        with caplog.at_level(logging.WARNING):
+            coordinator._ingest_mqtt_live_values(message)
+
+        assert "charge_window_0" not in coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+        assert caplog.records
+
+    def test_hour_out_of_range_is_rejected(self):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "25150715"]])
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        assert "charge_window_0" not in coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+
+    def test_minute_out_of_range_is_rejected(self):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "06990715"]])
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        assert "charge_window_0" not in coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+
+    def test_overnight_spanning_raw_value_is_rejected(self):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "22000600"]])
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        assert "charge_window_0" not in coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+
+    def test_discharge_window_validation_is_independent_and_logged(self, caplog):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_DISCHARGE_WINDOW_METER_IDS[0], "22000600"]])
+
+        with caplog.at_level(logging.WARNING):
+            coordinator._ingest_mqtt_live_values(message)
+
+        assert "discharge_window_0" not in coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+        assert "discharge window" in caplog.text.lower()
+
+    def test_previous_value_is_preserved_when_new_value_is_invalid(self):
+        coordinator = _make_coordinator()
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {
+            "charge_window_0": "06000700",
+            "charge_window_0_at": "sentinel-timestamp",
+        }
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "not-digits"]])
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live["charge_window_0"] == "06000700"
+        assert live["charge_window_0_at"] == "sentinel-timestamp"
+
+    def test_empty_slot_sentinel_still_ingested(self):
+        coordinator = _make_coordinator()
+        message = _data_report(PRIMARY_SERIAL, [[MQTT_EMS_CHARGE_WINDOW_METER_IDS[0], "0"]])
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        assert coordinator._mqtt_live_values[PRIMARY_SYSTEM]["charge_window_0"] == "0"
 
 
 class TestCumulativeEnergyTotalsRejectDecreases:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 import math
 from typing import Any
@@ -199,9 +199,31 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_message_at": None,
             "last_message_preview": None,
             "message_count": 0,
+            "publish_count": 0,
             "last_gw_sn": None,
             "last_dev_sn": None,
             "last_method": None,
+        }
+        # Timestamp of the last successful REST refresh cycle (discussion #6,
+        # item 13, "Improve MQTT diagnostics"). Additive instrumentation only
+        # - JackeryHomeCloudCoordinator extends plain DataUpdateCoordinator,
+        # not TimestampDataUpdateCoordinator, so there is no core-provided
+        # equivalent to read here.
+        self.last_rest_update_success_at: datetime | None = None
+        # Most recent write confirmation/error from async_set_meter_value(),
+        # for diagnostics only (discussion #6, item 13). Purely observational
+        # - never read by async_set_meter_value's own retry/verification
+        # logic, so it cannot influence write behavior (see CONTRIBUTING.md
+        # #4 for the contract this must not disturb).
+        self._mqtt_write_state: dict[str, Any] = {
+            "last_confirmed_meter_id": None,
+            "last_confirmed_bundle_key": None,
+            "last_confirmed_value": None,
+            "last_confirmed_at": None,
+            "last_error_meter_id": None,
+            "last_error_bundle_key": None,
+            "last_error_message": None,
+            "last_error_at": None,
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -234,6 +256,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def mqtt_credentials(self) -> dict[str, Any]:
         """Expose the latest encrypted MQTT REST payload for setup/runtime use."""
         return dict(self._mqtt_credentials)
+
+    @property
+    def mqtt_write_state(self) -> dict[str, Any]:
+        """Expose the most recent write confirmation/error for diagnostics."""
+        return dict(self._mqtt_write_state)
 
     async def _async_setup(self) -> None:
         """Perform one-time bootstrap work before the first refresh."""
@@ -307,6 +334,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.is_mqtt_system(system_id):
                 bundle = self._apply_mqtt_live_values_to_bundle(system_id, bundle)
             bundles[system_id] = bundle
+
+        self.last_rest_update_success_at = dt_util.utcnow()
 
         return {
             "account": self._account,
@@ -641,6 +670,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             try:
                 await mqtt_client.async_publish_json(topic, payload, qos=1)
+                self._mqtt_state["publish_count"] = int(self._mqtt_state.get("publish_count", 0)) + 1
                 _LOGGER.debug(
                     "Requested Jackery %s meter values for %s via MQTT topic %s",
                     log_label,
@@ -803,6 +833,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     }
                     try:
                         await mqtt_client.async_publish_json(topic, payload, qos=1)
+                        self._mqtt_state["publish_count"] = int(self._mqtt_state.get("publish_count", 0)) + 1
                     except Exception as err:
                         last_error = err
                         _LOGGER.debug(
@@ -852,6 +883,14 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             attempt,
                             last_seen,
                         )
+                        self._mqtt_write_state.update(
+                            {
+                                "last_confirmed_meter_id": meter_id,
+                                "last_confirmed_bundle_key": bundle_key,
+                                "last_confirmed_value": last_seen,
+                                "last_confirmed_at": dt_util.utcnow(),
+                            }
+                        )
                         return
                     if value_matches and not value_is_fresh:
                         _LOGGER.debug(
@@ -882,14 +921,28 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             sorted(live.keys()) if isinstance(live, Mapping) else None,
                         )
 
-                if last_seen is None and last_error is not None:
-                    raise HomeAssistantError(
-                        f"Failed to publish Jackery command for meter {meter_id} after {max_attempts} attempts: {last_error}"
-                    ) from last_error
-                raise HomeAssistantError(
-                    f"Jackery did not confirm meter {meter_id} = {raw_value!r} after {max_attempts} attempts "
-                    f"(last seen: {last_seen!r})"
+                publish_failed = last_seen is None and last_error is not None
+                if publish_failed:
+                    error_message = (
+                        f"Failed to publish Jackery command for meter {meter_id} "
+                        f"after {max_attempts} attempts: {last_error}"
+                    )
+                else:
+                    error_message = (
+                        f"Jackery did not confirm meter {meter_id} = {raw_value!r} after {max_attempts} "
+                        f"attempts (last seen: {last_seen!r})"
+                    )
+                self._mqtt_write_state.update(
+                    {
+                        "last_error_meter_id": meter_id,
+                        "last_error_bundle_key": bundle_key,
+                        "last_error_message": error_message,
+                        "last_error_at": dt_util.utcnow(),
+                    }
                 )
+                if publish_failed:
+                    raise HomeAssistantError(error_message) from last_error
+                raise HomeAssistantError(error_message)
         finally:
             if refresh_group is not None:
                 try:
@@ -1195,18 +1248,22 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_AUTO_STANDBY_METER_ID,
         )
-        charge_window_updates: dict[str, Any] = {}
-        for index, meter_id in enumerate(MQTT_EMS_CHARGE_WINDOW_METER_IDS):
-            raw = extract_ems_meter_raw_value(payload, device_serial=gw_sn, meter_id=meter_id)
-            if raw is not None:
-                charge_window_updates[f"charge_window_{index}"] = "0" if raw == "0" else raw.zfill(8)
-                charge_window_updates[f"charge_window_{index}_at"] = dt_util.utcnow()
-        discharge_window_updates: dict[str, Any] = {}
-        for index, meter_id in enumerate(MQTT_EMS_DISCHARGE_WINDOW_METER_IDS):
-            raw = extract_ems_meter_raw_value(payload, device_serial=gw_sn, meter_id=meter_id)
-            if raw is not None:
-                discharge_window_updates[f"discharge_window_{index}"] = "0" if raw == "0" else raw.zfill(8)
-                discharge_window_updates[f"discharge_window_{index}_at"] = dt_util.utcnow()
+        charge_window_updates = _ingest_schedule_window_updates(
+            payload,
+            gw_sn=gw_sn,
+            system_id=system_id,
+            meter_ids=MQTT_EMS_CHARGE_WINDOW_METER_IDS,
+            key_prefix="charge_window_",
+            label="charge",
+        )
+        discharge_window_updates = _ingest_schedule_window_updates(
+            payload,
+            gw_sn=gw_sn,
+            system_id=system_id,
+            meter_ids=MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
+            key_prefix="discharge_window_",
+            label="discharge",
+        )
         if (
             battery_charged_total is None
             and battery_discharged_total is None
@@ -2596,3 +2653,70 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _validate_and_pad_schedule_raw(raw: str) -> str | None:
+    """Validate and zero-pad an EMS schedule window raw value.
+
+    Returns the zero-padded 8-digit "HHMMHHMM" string, the "0" empty-slot
+    sentinel unchanged, or None if `raw` is invalid: not the sentinel, not
+    digits-only, more than 8 digits (zfill only pads, never truncates - see
+    CONTRIBUTING.md #2), an hour/minute component outside its native 00-23 /
+    00-59 range, or a window that does not start strictly before it ends
+    (overnight-spanning windows are rejected rather than accepted, per
+    CONTRIBUTING.md's schedule validation note).
+    """
+    if raw == "0":
+        return "0"
+    if not raw.isdigit():
+        return None
+    padded = raw.zfill(8)
+    if len(padded) != 8:
+        return None
+    start_hh, start_mm, end_hh, end_mm = (
+        int(padded[0:2]),
+        int(padded[2:4]),
+        int(padded[4:6]),
+        int(padded[6:8]),
+    )
+    if not (0 <= start_hh <= 23 and 0 <= start_mm <= 59 and 0 <= end_hh <= 23 and 0 <= end_mm <= 59):
+        return None
+    if start_hh * 60 + start_mm >= end_hh * 60 + end_mm:
+        return None
+    return padded
+
+
+def _ingest_schedule_window_updates(
+    payload: Mapping[str, Any],
+    *,
+    gw_sn: str,
+    system_id: str,
+    meter_ids: tuple[str, ...],
+    key_prefix: str,
+    label: str,
+) -> dict[str, Any]:
+    """Extract and validate one schedule-window meter group (charge or
+    discharge) from an MQTT payload. Shared by both groups in
+    _ingest_mqtt_live_values() - they differ only in which meter-id tuple,
+    bundle-key prefix, and log label they use.
+    """
+    updates: dict[str, Any] = {}
+    for index, meter_id in enumerate(meter_ids):
+        raw = extract_ems_meter_raw_value(payload, device_serial=gw_sn, meter_id=meter_id)
+        if raw is None:
+            continue
+        validated = _validate_and_pad_schedule_raw(raw)
+        if validated is None:
+            _LOGGER.warning(
+                "Ignoring invalid Jackery MQTT %s window value for %s slot %s "
+                "(meter %s): %r is not a valid \"0\" sentinel or same-day HHMMHHMM value",
+                label,
+                system_id,
+                index,
+                meter_id,
+                raw,
+            )
+            continue
+        updates[f"{key_prefix}{index}"] = validated
+        updates[f"{key_prefix}{index}_at"] = dt_util.utcnow()
+    return updates
