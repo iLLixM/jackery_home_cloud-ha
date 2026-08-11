@@ -28,11 +28,14 @@ from custom_components.jackery_home_cloud.const import (
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
+    CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
     DOMAIN,
 )
+from custom_components.jackery_home_cloud.coordinator import JackeryMqttSystem
 from custom_components.jackery_home_cloud.exceptions import (
     JackeryHomeCryptoError,
     JackeryHomeMqttError,
@@ -54,14 +57,14 @@ class _FakeCoordinator:
         self.config_entry = config_entry
         self.client = client
         self.data = {"selected_system_ids": ["1"], "systems": {}}
-        self.mqtt_system_id = "1"
-        self.mqtt_device_serial = "SN1"
+        self.mqtt_system = JackeryMqttSystem(system_id="1", device_serial="SN1")
         self.mqtt_credentials = {}
         self.async_config_entry_first_refresh = AsyncMock()
         self.async_handle_mqtt_status = AsyncMock()
         self.async_handle_mqtt_message = AsyncMock()
         self.async_request_fast_live_meter_values = AsyncMock()
         self.async_request_totals_live_meter_values = AsyncMock()
+        self.async_request_config_live_meter_values = AsyncMock()
 
 
 class _FakeMqttClient:
@@ -84,9 +87,9 @@ def _entry(*, options: dict | None = None) -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
         data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
-        options=options or {CONF_ENABLE_MQTT: False},
+        options=options or {CONF_ENABLE_MQTT: False, CONF_MQTT_SYSTEM_ID: None},
         version=1,
-        minor_version=4,
+        minor_version=5,
     )
 
 
@@ -121,8 +124,7 @@ class TestAsyncSetupEntryMqttEnabled:
         class _NoPrimaryCoordinator(_FakeCoordinator):
             def __init__(self, hass, config_entry, client):
                 super().__init__(hass, config_entry, client)
-                self.mqtt_system_id = None
-                self.mqtt_device_serial = ""
+                self.mqtt_system = None
 
         monkeypatch.setattr(integration, "JackeryHomeCloudCoordinator", _NoPrimaryCoordinator)
         entry = _entry(options={CONF_ENABLE_MQTT: True})
@@ -144,9 +146,9 @@ class TestAsyncSetupEntryMqttEnabled:
         mqtt_client.async_start.assert_awaited_once()
         assert mqtt_client.device_serial == "SN1"
         assert entry.runtime_data.mqtt_client is mqtt_client
-        # Two async_track_time_interval unsub callbacks registered (fast +
-        # totals polling) via entry.async_on_unload.
-        assert len(entry._on_unload) == 2
+        # Three async_track_time_interval unsub callbacks registered (fast +
+        # totals + config reconciliation polling) via entry.async_on_unload.
+        assert len(entry._on_unload) == 3
         # Cancel the real timers registered above so they don't linger past
         # this test (async_track_time_interval schedules a real asyncio
         # timer; nothing else in this direct-call test would ever cancel it).
@@ -281,6 +283,10 @@ class TestAsyncMigrateEntry:
 
         assert CONF_SELECTED_SYSTEMS not in entry.data
         assert entry.options[CONF_SELECTED_SYSTEMS] == ["1", "2"]
+        # More than one selected system -> deferred rather than guessed
+        # (see test_defers_mqtt_system_id_when_multiple_systems_selected).
+        assert entry.options[CONF_MQTT_SYSTEM_ID] is None
+        assert entry.options[CONF_MQTT_SYSTEM_SELECTION_PENDING] is True
 
     async def test_missing_option_defaults_are_filled_in(self, hass):
         entry = MockConfigEntry(
@@ -298,6 +304,60 @@ class TestAsyncMigrateEntry:
         assert entry.options[CONF_CRYPTO_KEY] == ""
         assert entry.options[CONF_MQTT_DEBUG_RAW] is False
         assert CONF_MQTT_POLL_INTERVAL in entry.options
+        # No CONF_SELECTED_SYSTEMS at all -> nothing to default the MQTT
+        # system to.
+        assert entry.options[CONF_MQTT_SYSTEM_ID] is None
+
+    async def test_seeds_mqtt_system_id_directly_when_one_system_selected(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options={CONF_SELECTED_SYSTEMS: ["7"]},
+            version=1,
+            minor_version=4,
+        )
+        entry.add_to_hass(hass)
+
+        await integration.async_migrate_entry(hass, entry)
+
+        # No ambiguity with a single selected system -> seeded directly,
+        # no deferral needed.
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "7"
+        assert CONF_MQTT_SYSTEM_SELECTION_PENDING not in entry.options
+
+    async def test_defers_mqtt_system_id_when_multiple_systems_selected(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options={CONF_SELECTED_SYSTEMS: ["2", "1"]},
+            version=1,
+            minor_version=4,
+        )
+        entry.add_to_hass(hass)
+
+        await integration.async_migrate_entry(hass, entry)
+
+        # Migration has no live API data to know which selected system
+        # actually exposes a resolvable MQTT serial -> deferred to the
+        # coordinator's first successful refresh instead of guessing
+        # selected[0] (see
+        # test_coordinator_mqtt_system_selection.py::TestResolvePendingMqttSystemSelection).
+        assert entry.options[CONF_MQTT_SYSTEM_ID] is None
+        assert entry.options[CONF_MQTT_SYSTEM_SELECTION_PENDING] is True
+
+    async def test_leaves_existing_mqtt_system_id_untouched(self, hass):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
+            options={CONF_SELECTED_SYSTEMS: ["1", "2"], CONF_MQTT_SYSTEM_ID: "2"},
+            version=1,
+            minor_version=4,
+        )
+        entry.add_to_hass(hass)
+
+        await integration.async_migrate_entry(hass, entry)
+
+        assert entry.options[CONF_MQTT_SYSTEM_ID] == "2"
 
     async def test_already_fully_migrated_entry_is_left_unchanged(self, hass, monkeypatch):
         entry = MockConfigEntry(
@@ -308,9 +368,10 @@ class TestAsyncMigrateEntry:
                 CONF_CRYPTO_KEY: "",
                 CONF_MQTT_DEBUG_RAW: False,
                 CONF_MQTT_POLL_INTERVAL: 60,
+                CONF_MQTT_SYSTEM_ID: None,
             },
             version=1,
-            minor_version=4,
+            minor_version=5,
         )
         entry.add_to_hass(hass)
         update = AsyncMock()

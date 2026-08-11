@@ -20,11 +20,14 @@ from homeassistant.util import dt as dt_util
 from .api.client import JackeryApiClient
 from .const import (
     CONF_ACCOUNT,
+    CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
     CONF_PASSWORD,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
     DAILY_TREND_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
+    MODEL_CAPABILITIES,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_SOC_METER_ID,
@@ -120,6 +123,11 @@ _SCHEDULE_EMS_METER_IDS: tuple[str, ...] = (
     *MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
 )
 
+# Sentinel for "no divergent MQTT resolution has been warned about yet",
+# distinct from a legitimate resolved-to-nothing outcome (`None`) so the
+# two can't be confused - see _async_update_data's freeze block.
+_MQTT_SYSTEM_NOT_YET_WARNED: Any = object()
+
 
 @dataclass(slots=True)
 class DailyTrendCache:
@@ -145,6 +153,19 @@ class BatteryResolution:
     bms_list_sum_kwh: float | None
     cluster_reference_kwh: float | None
     all_zero_sources: bool
+
+
+@dataclass(frozen=True, slots=True)
+class JackeryMqttSystem:
+    """The single Jackery system explicitly configured for MQTT.
+
+    Invariant enforced by _resolve_mqtt_system(): if this is non-None, both
+    fields are guaranteed non-empty - there is no "partial" resolved state.
+    Consumers only ever need `is None` as the absence check.
+    """
+
+    system_id: str
+    device_serial: str
 
 
 class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -184,20 +205,30 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Per-system wake signal for async_set_meter_value()'s event-driven
+        # verification wait (discussion #6, item 6, "Event-driven write
+        # verification") - set by _notify_mqtt_update() whenever any of the
+        # three _ingest_mqtt_* methods writes new data for that system into
+        # _mqtt_live_values. Only created lazily by a waiter (setdefault in
+        # async_set_meter_value) so systems nobody is writing to never get one.
+        self._mqtt_update_events: dict[str, asyncio.Event] = {}
         # Only one system is ever subscribed to on the Jackery MQTT broker
         # (see JackeryMqttClient, which is initialized with a single device
-        # serial). These track which selected system that is, so MQTT
+        # serial). This tracks which selected system that is, so MQTT
         # telemetry/controls/polling can be limited to it instead of being
-        # silently applied to every REST-selected system. See
-        # _resolve_mqtt_system() and is_mqtt_system(). Explicit user-facing
-        # MQTT system selection is a planned follow-up (see CONTRIBUTING.md
-        # and the PR #4 review discussion on multi-system accounts).
-        self.mqtt_system_id: str | None = None
-        self.mqtt_device_serial: str = ""
-        # Tracks the last (system_id, device_serial) pair we already warned
-        # about in _async_update_data(), so a persistently different
-        # resolution logs once instead of on every refresh cycle.
-        self._mqtt_system_last_warned: tuple[str | None, str] | None = None
+        # silently applied to every REST-selected system. The system itself
+        # is an explicit user choice (CONF_MQTT_SYSTEM_ID, set via the
+        # config/reconfigure flow) - see _resolve_mqtt_system() and
+        # is_mqtt_system().
+        self.mqtt_system: JackeryMqttSystem | None = None
+        # Tracks the last resolution we already warned about in
+        # _async_update_data(), so a persistently different resolution logs
+        # once instead of on every refresh cycle. Starts at the
+        # _MQTT_SYSTEM_NOT_YET_WARNED sentinel rather than None, because a
+        # divergent resolution can itself legitimately be None (resolved to
+        # nothing) - conflating that with "haven't warned yet" would skip
+        # the very first warning whenever the divergent outcome is None.
+        self._mqtt_system_last_warned: JackeryMqttSystem | None = _MQTT_SYSTEM_NOT_YET_WARNED
 
     @property
     def mqtt_credentials(self) -> dict[str, Any]:
@@ -237,33 +268,38 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
 
-        # The MQTT primary system is resolved once per coordinator instance
-        # (i.e. once per config entry load) and then frozen: the MQTT client
-        # in __init__.py is only ever constructed once, right after the
-        # first refresh, so re-resolving a different system on a later
-        # refresh would silently desynchronize the coordinator/entities from
-        # what the MQTT client is actually subscribed to. A changed
-        # resolution is only re-applied when the config entry is reloaded
-        # (which recreates this coordinator instance).
-        resolved_system_id, resolved_device_serial = self._resolve_mqtt_system(
-            selected_system_ids, dict(system_results)
-        )
-        if self.mqtt_system_id is None:
-            self.mqtt_system_id, self.mqtt_device_serial = resolved_system_id, resolved_device_serial
-        elif (resolved_system_id, resolved_device_serial) != (
-            self.mqtt_system_id,
-            self.mqtt_device_serial,
-        ) and (resolved_system_id, resolved_device_serial) != self._mqtt_system_last_warned:
+        if self.config_entry.options.get(CONF_MQTT_SYSTEM_SELECTION_PENDING):
+            self._resolve_pending_mqtt_system_selection(selected_system_ids, dict(system_results))
+
+        # The configured MQTT system is resolved once per coordinator
+        # instance (i.e. once per config entry load) and then frozen: the
+        # MQTT client in __init__.py is only ever constructed once, right
+        # after the first refresh, so re-resolving a different outcome on a
+        # later refresh would silently desynchronize the coordinator/
+        # entities from what the MQTT client is actually subscribed to. This
+        # matters even though the *configured* system_id itself can't change
+        # mid-cycle (a config/reconfigure edit reloads the entry): the
+        # resolved *device serial* for that one configured system can still
+        # flicker transiently between polls (e.g. a momentary REST hiccup),
+        # and freezing avoids flapping already-live MQTT entities back to
+        # unresolved over that. A changed resolution is only re-applied when
+        # the config entry is reloaded (which recreates this coordinator
+        # instance).
+        resolved = self._resolve_mqtt_system(selected_system_ids, dict(system_results))
+        if self.mqtt_system is None:
+            self.mqtt_system = resolved
+        elif resolved != self.mqtt_system and resolved != self._mqtt_system_last_warned:
             _LOGGER.warning(
-                "Ignoring changed Jackery MQTT primary-system resolution from "
-                "system_id=%s/serial=%s to system_id=%s/serial=%s; reload the "
-                "integration entry to apply the new resolution",
-                self.mqtt_system_id,
-                self.mqtt_device_serial,
-                resolved_system_id,
-                resolved_device_serial,
+                "Ignoring changed Jackery MQTT resolution for configured "
+                "system_id=%s: was device serial=%s, now device serial=%s; "
+                "this does not change which system is configured for MQTT "
+                "(reload the integration entry to re-establish the "
+                "connection if this persists)",
+                self.mqtt_system.system_id,
+                self.mqtt_system.device_serial,
+                resolved.device_serial if resolved is not None else "",
             )
-            self._mqtt_system_last_warned = (resolved_system_id, resolved_device_serial)
+            self._mqtt_system_last_warned = resolved
 
         bundles: dict[str, dict[str, Any]] = {}
         for system_id, bundle in system_results:
@@ -696,6 +732,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         fallback to a value-only match; every bundle_key passed here must
         have a companion timestamp tracked in _mqtt_live_values.
 
+        Verification is event-driven (discussion #6, item 6): rather than
+        blindly sleeping for verify_delay_seconds before checking once, each
+        attempt checks immediately after publish (covers a response that
+        already arrived while publishing), and if not yet confirmed, waits
+        on a per-system asyncio.Event that _notify_mqtt_update() sets
+        whenever new MQTT data lands for this system - rechecking on every
+        wake - until either confirmed or verify_delay_seconds (now a
+        per-attempt timeout ceiling, not a fixed delay) elapses. This wakes
+        as soon as the device responds instead of always waiting the full
+        delay, while still tolerating an unrelated update on the same
+        system waking it early without falsely confirming.
+
         Writes are serialized per (system_id, meter_id) using a lock stored
         in _meter_write_locks, so concurrent calls targeting the same meter
         (e.g. a rapid double-toggle) can't interleave their publish/verify
@@ -731,6 +779,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ems_device_sn = f"{dev_sn_prefix}_{device_sn}"
 
         lock = self._meter_write_locks.setdefault((system_id, meter_id), asyncio.Lock())
+        update_event = self._mqtt_update_events.setdefault(system_id, asyncio.Event())
+        loop = asyncio.get_running_loop()
         last_seen: Any = None
         last_seen_at: Any = None
         last_error: Exception | None = None
@@ -765,15 +815,35 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         await asyncio.sleep(verify_delay_seconds)
                         continue
 
-                    await asyncio.sleep(verify_delay_seconds)
-                    systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
-                    current_bundle = systems.get(system_id)
-                    live = self._mqtt_live_values.get(system_id, {})
-                    last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
-                    last_seen_at = live.get(timestamp_key)
+                    # Event-driven verification: check immediately (covers a
+                    # response that already arrived while publishing above),
+                    # then - if not yet confirmed - wake on the next MQTT
+                    # update for this system rather than sleeping blindly,
+                    # rechecking each wake until confirmed or this attempt's
+                    # timeout budget is exhausted. clear()+wait() below have
+                    # no `await` between them, so a set() from the message
+                    # handler can't be lost between the two.
+                    deadline = loop.time() + verify_delay_seconds
+                    while True:
+                        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+                        current_bundle = systems.get(system_id)
+                        live = self._mqtt_live_values.get(system_id, {})
+                        last_seen = current_bundle.get(bundle_key) if isinstance(current_bundle, Mapping) else None
+                        last_seen_at = live.get(timestamp_key)
 
-                    value_matches = _mqtt_control_values_match(expected_bundle_value, last_seen)
-                    value_is_fresh = last_seen_at is not None and last_seen_at >= cutoff
+                        value_matches = _mqtt_control_values_match(expected_bundle_value, last_seen)
+                        value_is_fresh = last_seen_at is not None and last_seen_at >= cutoff
+                        if value_matches and value_is_fresh:
+                            break
+
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            break
+                        update_event.clear()
+                        try:
+                            await asyncio.wait_for(update_event.wait(), timeout=remaining)
+                        except asyncio.TimeoutError:
+                            break
 
                     if value_matches and value_is_fresh:
                         _LOGGER.debug(
@@ -904,6 +974,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
         self._mqtt_live_values[system_id] = updated
+        self._notify_mqtt_update(system_id)
         _LOGGER.debug(
             "Accepted MQTT AC output state for %s via %s: raw=%s is_on=%s",
             system_id,
@@ -941,6 +1012,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
         self._mqtt_live_values[system_id] = updated
+        self._notify_mqtt_update(system_id)
         _LOGGER.debug(
             "Accepted MQTT device connection state for %s: %s",
             system_id,
@@ -956,6 +1028,15 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async_set_updated_data() here would perpetually defer _async_update_data(),
         starving all REST-sourced sensors (grid power, battery SOC, PV power, ...).
         Updating self.data directly and notifying listeners avoids that side effect.
+
+        This intentionally does NOT touch self.last_update_success. That
+        field exclusively reflects REST poll health (set by HA core's
+        DataUpdateCoordinator around _async_update_data) - it used to be
+        force-set True here on every MQTT event, which meant a real MQTT
+        broker outage could never surface through it. MQTT-specific
+        availability is now a separate signal - see
+        JackeryHomeCloudCoordinator.is_control_available() (discussion #6,
+        item 4, "MQTT-aware availability").
         """
         if not self.data:
             return
@@ -969,7 +1050,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             systems[system_id] = merged_bundle
         new_data["systems"] = systems
         self.data = new_data
-        self.last_update_success = True
         self.async_update_listeners()
 
     def _ingest_mqtt_live_values(self, message: Mapping[str, Any]) -> None:
@@ -1526,6 +1606,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         self._mqtt_live_values[system_id] = updated
+        self._notify_mqtt_update(system_id)
 
     def _extract_ac_output_state(self, payload: Mapping[str, Any], gw_sn: str) -> str | None:
         """Return the raw AC output state from an MQTT control payload."""
@@ -1611,12 +1692,44 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         from .const import MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE
         return MQTT_CLOUD_COMMAND_TOPIC_TEMPLATE.format(device_serial=device_sn)
 
+    def _resolve_pending_mqtt_system_selection(
+        self,
+        selected_system_ids: Iterable[str],
+        bundles_by_id: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Resolve and persist CONF_MQTT_SYSTEM_ID once, for a deferred migration.
+
+        async_migrate_entry() defers CONF_MQTT_SYSTEM_ID (leaving it None
+        and setting CONF_MQTT_SYSTEM_SELECTION_PENDING) for entries migrated
+        with more than one selected system, since it has no live API data
+        to tell which one actually exposes a resolvable MQTT device serial.
+        This runs on every refresh while the pending marker is set, using
+        the bundle data this refresh just fetched to replicate the old
+        pre-explicit-selection heuristic exactly once: the first selected
+        system (in CONF_SELECTED_SYSTEMS order) with a resolvable serial.
+
+        If no selected system resolves this cycle (e.g. a transient REST
+        gap), the pending marker is left in place and this simply retries
+        on the next refresh rather than persisting a guess.
+        """
+        for system_id in selected_system_ids:
+            bundle = bundles_by_id.get(str(system_id))
+            if not isinstance(bundle, Mapping):
+                continue
+            if not self._extract_system_device_sn(bundle):
+                continue
+            new_options = dict(self.config_entry.options)
+            new_options[CONF_MQTT_SYSTEM_ID] = str(system_id)
+            new_options.pop(CONF_MQTT_SYSTEM_SELECTION_PENDING, None)
+            self.hass.config_entries.async_update_entry(self.config_entry, options=new_options)
+            return
+
     def _resolve_mqtt_system(
         self,
         selected_system_ids: Iterable[str],
         bundles_by_id: Mapping[str, Mapping[str, Any]],
-    ) -> tuple[str | None, str]:
-        """Resolve the single selected system used for MQTT telemetry/controls.
+    ) -> JackeryMqttSystem | None:
+        """Resolve the explicitly configured MQTT system for this refresh cycle.
 
         The Jackery MQTT broker connection is only ever subscribed to one
         device's topics (see JackeryMqttClient's single device_serial), so
@@ -1626,32 +1739,131 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data_set requests, leaving entities stuck at unknown or write
         verification failing even when the device accepted the command.
 
-        This picks the first selected system (in configured order, matching
-        _resolve_selected_system_ids) that has a resolvable device serial,
-        and is deliberately simple/deterministic rather than persisted or
-        user-configurable. Explicit MQTT system selection is intentionally
-        out of scope here and left for a follow-up PR (see
-        CONTRIBUTING.md and the PR #4 review discussion on multi-system
-        accounts).
+        Unlike REST system selection, the MQTT system is a single explicit
+        choice stored in CONF_MQTT_SYSTEM_ID (set via the config/reconfigure
+        flow, with a migration default for existing entries) - this method
+        looks that one id up rather than inferring/iterating over
+        candidates. Returns None whenever the configured system can't be
+        used this cycle: not configured at all, configured but no longer
+        present in selected_system_ids (e.g. deselected via reconfigure, or
+        dropped by the account), or present but its bundle has no resolvable
+        device serial. __init__.py's ConfigEntryNotReady handling treats all
+        of these cases identically.
         """
-        for system_id in selected_system_ids:
-            bundle = bundles_by_id.get(system_id)
-            if not isinstance(bundle, Mapping):
-                continue
-            device_sn = self._extract_system_device_sn(bundle)
-            if device_sn:
-                return system_id, device_sn
-        return None, ""
+        configured_system_id = self.config_entry.options.get(CONF_MQTT_SYSTEM_ID)
+        if not configured_system_id:
+            return None
+        configured_system_id = str(configured_system_id)
+        if configured_system_id not in {str(system_id) for system_id in selected_system_ids}:
+            return None
+        bundle = bundles_by_id.get(configured_system_id)
+        if not isinstance(bundle, Mapping):
+            return None
+        device_sn = self._extract_system_device_sn(bundle)
+        if not device_sn:
+            return None
+        return JackeryMqttSystem(system_id=configured_system_id, device_serial=device_sn)
 
     def is_mqtt_system(self, system_id: str) -> bool:
         """Return whether MQTT telemetry/controls are enabled for this system.
 
-        Only the resolved primary system (see _resolve_mqtt_system) is ever
-        subscribed to on the Jackery MQTT broker; every other selected
-        system remains REST-only until explicit multi-system MQTT support
-        ships.
+        Only the explicitly configured MQTT system (see _resolve_mqtt_system
+        and CONF_MQTT_SYSTEM_ID) is ever subscribed to on the Jackery MQTT
+        broker; every other selected system remains REST-only until
+        multi-system MQTT support ships.
         """
-        return self.mqtt_system_id is not None and str(system_id) == self.mqtt_system_id
+        return self.mqtt_system is not None and str(system_id) == self.mqtt_system.system_id
+
+    def _notify_mqtt_update(self, system_id: str) -> None:
+        """Wake any async_set_meter_value() verification wait for this system.
+
+        Called after _mqtt_live_values[system_id] is written by any of the
+        three _ingest_mqtt_* methods. Looked up rather than created here -
+        only a waiter (async_set_meter_value) creates the Event, via
+        setdefault, so systems nobody is currently writing to never get one.
+        """
+        event = self._mqtt_update_events.get(system_id)
+        if event is not None:
+            event.set()
+
+    def _detect_system_model(self, bundle: Mapping[str, Any]) -> str | None:
+        """Return the REST-reported factory model for a system bundle, if any."""
+        system = bundle.get("system", {}) if isinstance(bundle, Mapping) else {}
+        if not isinstance(system, Mapping):
+            return None
+        for key in ("factoryModel", "series", "model"):
+            value = system.get(key)
+            if value:
+                return str(value).strip()
+        return None
+
+    def detected_model(self, system_id: str) -> str | None:
+        """Return the detected model for a selected system, if resolvable."""
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        bundle = systems.get(system_id)
+        return self._detect_system_model(bundle) if isinstance(bundle, Mapping) else None
+
+    def is_model_confirmed(self, system_id: str) -> bool:
+        """Return whether this system's detected model has a MODEL_CAPABILITIES entry.
+
+        See discussion #6, item 9 ("Device capability and model detection").
+        A confirmed model's capability set has actually been validated
+        against real hardware; an unconfirmed model is not "unsupported",
+        just untested - see supports_meter()'s fallback policy.
+        """
+        model = self.detected_model(system_id)
+        return model is not None and model in MODEL_CAPABILITIES
+
+    def supports_meter(self, system_id: str, meter_id: str) -> bool:
+        """Return whether this system's detected model is known to expose meter_id.
+
+        Unconfirmed/unmapped models return True for every meter_id (see
+        MODEL_CAPABILITIES's docstring in const.py) - only a *confirmed*
+        model whose capability set is known NOT to include meter_id returns
+        False.
+        """
+        if not self.is_mqtt_system(system_id):
+            return False
+        model = self.detected_model(system_id)
+        supported_meters = MODEL_CAPABILITIES.get(model) if model else None
+        if supported_meters is None:
+            return True
+        return meter_id in supported_meters
+
+    def is_control_available(self, system_id: str, device_sn: str) -> bool:
+        """Return whether an MQTT-backed control/button entity should report available.
+
+        Discussion #6, item 4 ("MQTT-aware availability"): combines every
+        signal the backlog calls for - a resolvable device serial, the most
+        recent REST poll's actual success/failure (last_update_success is no
+        longer forced True by MQTT traffic, see _publish_runtime_update),
+        whether this is in fact the single system MQTT is configured for,
+        whether the MQTT client connection is currently up, and - only when
+        a gateway LWT online/offline state has actually been observed for
+        this system - that state.
+
+        No LWT observed yet is treated as available (optimistic default):
+        the MQTT client is started in __init__.py before platforms are
+        forwarded, so on a fresh/reloaded config entry the LWT retained
+        message can plausibly arrive before or after entity construction -
+        there is no ordering guarantee either way. Defaulting to
+        unavailable here would make every control flash
+        unavailable-then-available on most reloads for no diagnostic
+        value; "offline" is the strong, unambiguous signal this should
+        react to, not "we haven't heard yet".
+        """
+        if not device_sn:
+            return False
+        if not self.last_update_success:
+            return False
+        if not self.is_mqtt_system(system_id):
+            return False
+        if not bool(self._mqtt_state.get("connected", False)):
+            return False
+        systems = self.data.get("systems", {}) if isinstance(self.data, Mapping) else {}
+        bundle = systems.get(system_id)
+        gateway_state = bundle.get("device_connection") if isinstance(bundle, Mapping) else None
+        return gateway_state != "offline"
 
     def _resolve_system_day_key(self, system_id: str) -> str:
         """Return the current local day key for a selected system."""

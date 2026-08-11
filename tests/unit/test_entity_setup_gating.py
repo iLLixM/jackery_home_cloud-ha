@@ -17,7 +17,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from custom_components.jackery_home_cloud import button, number, select, switch
-from custom_components.jackery_home_cloud.const import CONF_ENABLE_MQTT
+from custom_components.jackery_home_cloud.const import (
+    CONF_ENABLE_MQTT,
+    MQTT_EMS_AUTO_STANDBY_METER_ID,
+    MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
+    MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+    MQTT_EMS_REBOOT_METER_ID,
+)
 from custom_components.jackery_home_cloud.sensor import (
     SYSTEM_SENSOR_DESCRIPTIONS,
     JackeryScheduleSensor,
@@ -29,12 +35,36 @@ SECONDARY = "sys-secondary"
 
 
 class _FakeCoordinator:
-    def __init__(self, data: dict, mqtt_system_id: str | None):
+    def __init__(
+        self,
+        data: dict,
+        mqtt_system_id: str | None,
+        *,
+        model_confirmed: bool = False,
+        unsupported_meter_ids: frozenset[str] = frozenset(),
+    ):
         self.data = data
         self._mqtt_system_id = mqtt_system_id
+        # Mirrors JackeryHomeCloudCoordinator.is_model_confirmed()/
+        # supports_meter() (discussion #6, item 9, "Device capability and
+        # model detection"). Defaults match today's real-world default: no
+        # `factoryModel` in the fixture bundles below -> unconfirmed model
+        # -> every meter "supported" (see coordinator.py's fallback
+        # policy), which is exactly what the existing entity-count
+        # assertions below already pin.
+        self._model_confirmed = model_confirmed
+        self._unsupported_meter_ids = unsupported_meter_ids
 
     def is_mqtt_system(self, system_id: str) -> bool:
         return self._mqtt_system_id is not None and str(system_id) == self._mqtt_system_id
+
+    def is_model_confirmed(self, system_id: str) -> bool:
+        return self.is_mqtt_system(system_id) and self._model_confirmed
+
+    def supports_meter(self, system_id: str, meter_id: str) -> bool:
+        if not self.is_mqtt_system(system_id):
+            return False
+        return meter_id not in self._unsupported_meter_ids
 
 
 def _bundle(serial: str) -> dict:
@@ -169,3 +199,113 @@ class TestSensorBuildEntitiesGating:
             e.entity_description.key for e in entities if getattr(e, "entity_description", None) is not None
         }
         assert not (present_keys & requires_mqtt_keys)
+
+
+# One representative gated meter id per platform, matched to the class that
+# disappears when that meter isn't in a confirmed model's capability set
+# (discussion #6, item 9, "Device capability and model detection").
+PLATFORM_GATED_METER = {
+    "number": MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
+    "select": MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+    "switch": MQTT_EMS_AUTO_STANDBY_METER_ID,
+    "button": MQTT_EMS_REBOOT_METER_ID,
+}
+
+
+class TestCapabilityGating:
+    async def test_confirmed_model_with_full_capability_set_creates_all_entities_enabled(self):
+        """A confirmed model whose capability set covers every meter behaves
+        exactly like today (no entity dropped, none disabled-by-default)."""
+        for name, setup_fn, expected_count in MQTT_PLATFORMS:
+            coordinator = _FakeCoordinator(
+                {"systems": {PRIMARY: _bundle("SN1")}},
+                mqtt_system_id=PRIMARY,
+                model_confirmed=True,
+            )
+            entry = _entry(enable_mqtt=True, mqtt_client=object(), coordinator=coordinator)
+            entities = await _collect(setup_fn, entry)
+            assert len(entities) == expected_count, f"{name}: expected {expected_count}, got {len(entities)}"
+            for entity in entities:
+                assert getattr(entity, "_attr_entity_registry_enabled_default", True) is True
+
+    async def test_confirmed_model_missing_one_meter_drops_exactly_that_entity(self):
+        for name, setup_fn, expected_count in MQTT_PLATFORMS:
+            coordinator = _FakeCoordinator(
+                {"systems": {PRIMARY: _bundle("SN1")}},
+                mqtt_system_id=PRIMARY,
+                model_confirmed=True,
+                unsupported_meter_ids=frozenset({PLATFORM_GATED_METER[name]}),
+            )
+            entry = _entry(enable_mqtt=True, mqtt_client=object(), coordinator=coordinator)
+            entities = await _collect(setup_fn, entry)
+            assert len(entities) == expected_count - 1, (
+                f"{name}: expected {expected_count - 1}, got {len(entities)}"
+            )
+
+    async def test_unconfirmed_model_creates_all_entities_disabled_by_default(self):
+        """Unconfirmed models are not reduced (no regression for users on a
+        model that happens to work but isn't listed yet) - they only get
+        entity_registry_enabled_default=False so a user must opt in."""
+        for name, setup_fn, expected_count in MQTT_PLATFORMS:
+            coordinator = _FakeCoordinator(
+                {"systems": {PRIMARY: _bundle("SN1")}},
+                mqtt_system_id=PRIMARY,
+                model_confirmed=False,
+            )
+            entry = _entry(enable_mqtt=True, mqtt_client=object(), coordinator=coordinator)
+            entities = await _collect(setup_fn, entry)
+            assert len(entities) == expected_count, f"{name}: expected {expected_count}, got {len(entities)}"
+            for entity in entities:
+                assert entity._attr_entity_registry_enabled_default is False
+
+
+class TestSensorCapabilityGating:
+    def test_confirmed_model_requires_mqtt_sensors_are_enabled_by_default(self):
+        coordinator = _FakeCoordinator(
+            {"systems": {PRIMARY: _bundle("SN1")}}, mqtt_system_id=PRIMARY, model_confirmed=True
+        )
+
+        entities = _build_entities(coordinator, mqtt_enabled=True)
+
+        requires_mqtt_keys = {d.key for d in SYSTEM_SENSOR_DESCRIPTIONS if d.requires_mqtt}
+        for entity in entities:
+            description = getattr(entity, "entity_description", None)
+            if description is not None and description.key in requires_mqtt_keys:
+                assert getattr(entity, "_attr_entity_registry_enabled_default", True) is True
+
+    def test_unconfirmed_model_requires_mqtt_sensors_and_schedule_sensor_are_disabled_by_default(self):
+        coordinator = _FakeCoordinator(
+            {"systems": {PRIMARY: _bundle("SN1")}}, mqtt_system_id=PRIMARY, model_confirmed=False
+        )
+
+        entities = _build_entities(coordinator, mqtt_enabled=True)
+
+        requires_mqtt_keys = {d.key for d in SYSTEM_SENSOR_DESCRIPTIONS if d.requires_mqtt}
+        requires_mqtt_entities = [
+            e
+            for e in entities
+            if getattr(e, "entity_description", None) is not None
+            and e.entity_description.key in requires_mqtt_keys
+        ]
+        assert requires_mqtt_entities
+        for entity in requires_mqtt_entities:
+            assert entity._attr_entity_registry_enabled_default is False
+
+        schedule_entities = [e for e in entities if isinstance(e, JackeryScheduleSensor)]
+        assert len(schedule_entities) == 1
+        assert schedule_entities[0]._attr_entity_registry_enabled_default is False
+
+    def test_unconfirmed_model_rest_only_sensors_stay_enabled_by_default(self):
+        """Only requires_mqtt sensors are affected - plain REST sensors have
+        no capability question (they don't depend on MQTT meter support)."""
+        coordinator = _FakeCoordinator(
+            {"systems": {PRIMARY: _bundle("SN1")}}, mqtt_system_id=PRIMARY, model_confirmed=False
+        )
+
+        entities = _build_entities(coordinator, mqtt_enabled=True)
+
+        non_mqtt_keys = {d.key for d in SYSTEM_SENSOR_DESCRIPTIONS if not d.requires_mqtt}
+        for entity in entities:
+            description = getattr(entity, "entity_description", None)
+            if description is not None and description.key in non_mqtt_keys:
+                assert getattr(entity, "_attr_entity_registry_enabled_default", True) is True

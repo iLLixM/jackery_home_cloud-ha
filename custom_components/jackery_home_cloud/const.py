@@ -11,6 +11,13 @@ CONF_ACCOUNT = "account"
 CONF_PASSWORD = "password"
 CONF_PHONE_UID = "phone_uid"
 CONF_SELECTED_SYSTEMS = "selected_systems"
+CONF_MQTT_SYSTEM_ID = "mqtt_system_id"
+# Set by async_migrate_entry() when a migrated entry has more than one
+# selected system and CONF_MQTT_SYSTEM_ID can't be defaulted without live
+# API data (see coordinator._resolve_pending_mqtt_system_selection). Cleared
+# once the coordinator's first successful refresh resolves and persists a
+# real CONF_MQTT_SYSTEM_ID.
+CONF_MQTT_SYSTEM_SELECTION_PENDING = "mqtt_system_selection_pending"
 CONF_ENABLE_MQTT = "enable_mqtt"
 CONF_CRYPTO_KEY = "crypto_key"
 CONF_MQTT_DEBUG_RAW = "mqtt_debug_raw"
@@ -59,6 +66,13 @@ MQTT_LIVE_VALUE_MAX_AGE_SECONDS = 900
 # Fixed (non-user-configurable) cadence for the slow "cumulative totals" poll
 # group - 3x headroom under MQTT_LIVE_VALUE_MAX_AGE_SECONDS above.
 MQTT_TOTALS_POLL_INTERVAL_SECONDS = 300
+# Fixed (non-user-configurable) cadence for reconciling the config/schedule
+# meter group against the device (discussion #6, item 8, "Configuration
+# reconciliation for external changes"). This group is otherwise only
+# requested on MQTT reconnect and right after a write targeting it (see
+# refresh_group on async_set_meter_value) - this timer is what catches
+# settings changed through the Jackery app instead of through HA.
+MQTT_CONFIG_RECONCILE_INTERVAL_SECONDS = 1800
 # MQTT_POLL_INTERVAL_MAX_SECONDS above must stay comfortably below this
 # value, or the power/SOC sensors it gates will flap between MQTT and REST
 # every poll cycle.
@@ -191,4 +205,35 @@ CONF_MQTT_TLS_INSECURE = "mqtt_tls_insecure"
 
 MODEL_NAME_MAP: dict[str, str] = {
     "JAKS-IN1K5-BA2K-EUA1": "HomePower 2000 Ultra",
+}
+
+# Confirmed device capabilities, keyed by the REST `factoryModel` field (the
+# same source _friendly_model_name()/MODEL_NAME_MAP above use). Only
+# JAKS-IN1K5-BA2K-EUA1 has ever been tested against a real device (see
+# README.md) - every meter id below was reverse engineered against that
+# specific unit (see CONTRIBUTING.md #1 for how each was identified).
+#
+# A model with NO entry here is "unconfirmed", not "unsupported": see
+# JackeryHomeCloudCoordinator.supports_meter()'s fallback policy in
+# coordinator.py. We deliberately do NOT default an unmapped model to a
+# reduced entity set, because we have no evidence either way for it and
+# doing so would risk silently removing working entities for an existing
+# user on a model that happens to work but was simply never added here.
+# Unconfirmed-model entities are instead created disabled-by-default (see
+# is_model_confirmed() usage in number.py/select.py/switch.py/button.py/
+# sensor.py) so a user must explicitly opt in.
+MODEL_CAPABILITIES: dict[str, frozenset[str]] = {
+    "JAKS-IN1K5-BA2K-EUA1": frozenset(
+        {
+            MQTT_EMS_REBOOT_METER_ID,
+            MQTT_EMS_AC_OUTPUT_METER_ID,
+            MQTT_EMS_WORK_MODE_METER_ID,
+            MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
+            MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
+            MQTT_EMS_CHARGE_LIMIT_SOC_METER_ID,
+            MQTT_EMS_FEED_POWER_LIMIT_METER_ID,
+            MQTT_EMS_STANDBY_METER_ID,
+            MQTT_EMS_AUTO_STANDBY_METER_ID,
+        }
+    ),
 }

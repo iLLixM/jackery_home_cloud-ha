@@ -20,12 +20,15 @@ from .const import (
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
+    CONF_MQTT_SYSTEM_ID,
+    CONF_MQTT_SYSTEM_SELECTION_PENDING,
     CONF_MQTT_TLS_INSECURE,
     CONF_PHONE_UID,
     CONF_SELECTED_SYSTEMS,
     DEFAULT_BASE_URL,
     DEFAULT_MQTT_POLL_INTERVAL_SECONDS,
     DOMAIN,
+    MQTT_CONFIG_RECONCILE_INTERVAL_SECONDS,
     MQTT_TOTALS_POLL_INTERVAL_SECONDS,
     PLATFORMS,
 )
@@ -36,7 +39,7 @@ from .mqtt_client import JackeryMqttClient
 _LOGGER = logging.getLogger(__name__)
 
 _CONFIG_ENTRY_VERSION = 1
-_CONFIG_ENTRY_MINOR_VERSION = 4
+_CONFIG_ENTRY_MINOR_VERSION = 5
 
 
 @dataclass(slots=True)
@@ -59,7 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.runtime_data = runtime
 
     if entry.options.get(CONF_ENABLE_MQTT):
-        if coordinator.mqtt_system_id is None or not coordinator.mqtt_device_serial:
+        if coordinator.mqtt_system is None:
             # No eligible system was resolved on this first refresh (e.g. a
             # transient API hiccup). Raising ConfigEntryNotReady lets Home
             # Assistant's own setup retry/backoff re-attempt async_setup_entry
@@ -67,21 +70,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # manual reload (the MQTT client below is only ever constructed
             # once per config entry load).
             raise ConfigEntryNotReady(
-                "MQTT is enabled, but no selected Jackery system currently exposes "
-                "a usable device serial. Setup will be retried; disable MQTT in the "
-                "integration options if the device does not support this MQTT path."
+                "MQTT is enabled, but the configured MQTT system (or none has been "
+                "configured yet) does not currently expose a usable device serial. "
+                "Setup will be retried; use Reconfigure to select or change the MQTT "
+                "system, or disable MQTT if this device does not support this MQTT path."
             )
 
         selected_system_count = len(coordinator.data.get("selected_system_ids", []))
         if selected_system_count > 1:
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Jackery account %s has %d selected systems; MQTT telemetry/controls "
-                "are limited to the primary system_id=%s (device serial=%s). Other "
+                "are limited to the configured system_id=%s (device serial=%s). Other "
                 "systems remain REST-only.",
                 entry.title,
                 selected_system_count,
-                coordinator.mqtt_system_id,
-                coordinator.mqtt_device_serial,
+                coordinator.mqtt_system.system_id,
+                coordinator.mqtt_system.device_serial,
             )
 
         crypto_key = str(entry.options.get(CONF_CRYPTO_KEY, "")).strip()
@@ -91,16 +95,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 coordinator.mqtt_credentials,
             )
             mqtt_tls_insecure = bool(entry.options.get(CONF_MQTT_TLS_INSECURE, False))
-            # coordinator.mqtt_system_id/mqtt_device_serial are resolved by
-            # _resolve_mqtt_system() during the first refresh above. Only
-            # this single system's topics are subscribed to below; every
-            # other REST-selected system in a multi-system account stays
-            # REST-only (see JackeryHomeCloudCoordinator.is_mqtt_system).
-            main_device_serial = coordinator.mqtt_device_serial
+            # coordinator.mqtt_system is resolved by _resolve_mqtt_system()
+            # during the first refresh above. Only this single system's
+            # topics are subscribed to below; every other REST-selected
+            # system in a multi-system account stays REST-only (see
+            # JackeryHomeCloudCoordinator.is_mqtt_system).
+            main_device_serial = coordinator.mqtt_system.device_serial
             _LOGGER.debug("Jackery MQTT TLS insecure option from config entry: %s", mqtt_tls_insecure)
             _LOGGER.debug(
                 "Jackery MQTT enabled for system_id=%s, device serial=%s (targeted subscriptions only)",
-                coordinator.mqtt_system_id,
+                coordinator.mqtt_system.system_id,
                 main_device_serial,
             )
             mqtt_client = JackeryMqttClient(
@@ -125,6 +129,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async def _async_poll_totals_live_meters(_now) -> None:
                 await coordinator.async_request_totals_live_meter_values()
 
+            async def _async_poll_config_live_meters(_now) -> None:
+                await coordinator.async_request_config_live_meter_values()
+
             entry.async_on_unload(
                 async_track_time_interval(
                     hass,
@@ -137,6 +144,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     hass,
                     _async_poll_totals_live_meters,
                     timedelta(seconds=MQTT_TOTALS_POLL_INTERVAL_SECONDS),
+                )
+            )
+            entry.async_on_unload(
+                async_track_time_interval(
+                    hass,
+                    _async_poll_config_live_meters,
+                    timedelta(seconds=MQTT_CONFIG_RECONCILE_INTERVAL_SECONDS),
                 )
             )
         except JackeryHomeCryptoError as err:
@@ -222,6 +236,25 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         changed = True
     if CONF_MQTT_POLL_INTERVAL not in options:
         options[CONF_MQTT_POLL_INTERVAL] = DEFAULT_MQTT_POLL_INTERVAL_SECONDS
+        changed = True
+    if CONF_MQTT_SYSTEM_ID not in options:
+        selected = options.get(CONF_SELECTED_SYSTEMS) or []
+        if len(selected) > 1:
+            # Multiple candidates: the old implicit heuristic picked the
+            # first selected system with a resolvable MQTT device serial,
+            # which requires live API data this migration step doesn't
+            # have. Guessing selected[0] here can freeze an
+            # already-working multi-system entry into permanent
+            # ConfigEntryNotReady if that particular system turns out not
+            # to expose an MQTT serial. Defer instead: the coordinator's
+            # first successful refresh has the bundle data needed to
+            # replicate the old heuristic exactly once (see
+            # _resolve_pending_mqtt_system_selection in coordinator.py).
+            options[CONF_MQTT_SYSTEM_ID] = None
+            options[CONF_MQTT_SYSTEM_SELECTION_PENDING] = True
+        else:
+            # Zero or one selected system: no ambiguity, no need to defer.
+            options[CONF_MQTT_SYSTEM_ID] = str(selected[0]) if selected else None
         changed = True
 
     if entry.minor_version < _CONFIG_ENTRY_MINOR_VERSION:

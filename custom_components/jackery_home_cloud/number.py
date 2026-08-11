@@ -55,20 +55,24 @@ async def async_setup_entry(
         device_sn = _extract_system_device_sn(bundle)
         if not device_sn:
             continue
+        model_confirmed = coordinator.is_model_confirmed(system_id)
         for entity_cls in (
             JackeryDischargeLimitSocNumber,
             JackeryChargeLimitSocNumber,
             JackeryFeedPowerLimitNumber,
         ):
-            entities.append(
-                entity_cls(
-                    coordinator=coordinator,
-                    system_id=str(system_id),
-                    bundle=bundle,
-                    mqtt_client=runtime.mqtt_client,
-                    device_sn=device_sn,
-                )
+            if not coordinator.supports_meter(system_id, entity_cls._meter_id):
+                continue
+            entity = entity_cls(
+                coordinator=coordinator,
+                system_id=str(system_id),
+                bundle=bundle,
+                mqtt_client=runtime.mqtt_client,
+                device_sn=device_sn,
             )
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
 
     if entities:
         async_add_entities(entities)
@@ -122,7 +126,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def _system_bundle(self) -> dict[str, Any] | None:

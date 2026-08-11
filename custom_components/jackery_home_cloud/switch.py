@@ -57,33 +57,40 @@ async def async_setup_entry(
         device_sn = _extract_system_device_sn(bundle)
         if not device_sn:
             continue
-        entities.append(
-            JackeryAcOutputSwitch(
+        model_confirmed = coordinator.is_model_confirmed(system_id)
+        if coordinator.supports_meter(system_id, MQTT_EMS_AC_OUTPUT_METER_ID):
+            entity = JackeryAcOutputSwitch(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
-        entities.append(
-            JackeryStandbySwitch(
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
+        if coordinator.supports_meter(system_id, MQTT_EMS_STANDBY_METER_ID):
+            entity = JackeryStandbySwitch(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
-        entities.append(
-            JackeryAutoStandbySwitch(
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
+        if coordinator.supports_meter(system_id, MQTT_EMS_AUTO_STANDBY_METER_ID):
+            entity = JackeryAutoStandbySwitch(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
 
     if entities:
         async_add_entities(entities)
@@ -129,7 +136,7 @@ class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Swit
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def is_on(self) -> bool | None:
@@ -263,7 +270,7 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def is_on(self) -> bool | None:
@@ -383,7 +390,7 @@ class JackeryAutoStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], S
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def is_on(self) -> bool | None:

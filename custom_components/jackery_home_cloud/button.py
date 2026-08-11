@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     CONF_ENABLE_MQTT,
@@ -22,6 +23,7 @@ from .const import (
     MQTT_EMS_REBOOT_METER_ID,
     MODEL_NAME_MAP,
 )
+from .coordinator import JackeryHomeCloudCoordinator
 
 
 async def async_setup_entry(
@@ -49,20 +51,24 @@ async def async_setup_entry(
         device_sn = _extract_system_device_sn(bundle)
         if not device_sn:
             continue
-        entities.append(
-            JackeryRebootButton(
-                system_id=str(system_id),
-                bundle=bundle,
-                mqtt_client=runtime.mqtt_client,
-                device_sn=device_sn,
-            )
+        if not coordinator.supports_meter(system_id, MQTT_EMS_REBOOT_METER_ID):
+            continue
+        entity = JackeryRebootButton(
+            coordinator=coordinator,
+            system_id=str(system_id),
+            bundle=bundle,
+            mqtt_client=runtime.mqtt_client,
+            device_sn=device_sn,
         )
+        if not coordinator.is_model_confirmed(system_id):
+            entity._attr_entity_registry_enabled_default = False
+        entities.append(entity)
 
     if entities:
         async_add_entities(entities)
 
 
-class JackeryRebootButton(ButtonEntity):
+class JackeryRebootButton(CoordinatorEntity[JackeryHomeCloudCoordinator], ButtonEntity):
     """Button entity that reboots a Jackery device via MQTT."""
 
     _attr_has_entity_name = True
@@ -73,18 +79,25 @@ class JackeryRebootButton(ButtonEntity):
     def __init__(
         self,
         *,
+        coordinator: JackeryHomeCloudCoordinator,
         system_id: str,
         bundle: Mapping[str, Any],
         mqtt_client: Any,
         device_sn: str,
     ) -> None:
         """Initialize the reboot button."""
+        super().__init__(coordinator)
         self._system_id = system_id
         self._bundle = dict(bundle)
         self._mqtt_client = mqtt_client
         self._device_sn = str(device_sn).strip()
         self._attr_unique_id = f"system_{system_id}_reboot_device"
         self._attr_device_info = _system_device_info(system_id, bundle)
+
+    @property
+    def available(self) -> bool:
+        """Return availability based on device serial and MQTT connectivity."""
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     async def async_press(self) -> None:
         """Publish the Jackery reboot command via MQTT."""

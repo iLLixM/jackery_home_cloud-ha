@@ -24,6 +24,7 @@ from .const import (
     CONF_ENABLE_MQTT,
     CONF_MQTT_DEBUG_RAW,
     CONF_MQTT_POLL_INTERVAL,
+    CONF_MQTT_SYSTEM_ID,
     CONF_MQTT_TLS_INSECURE,
     CONF_PASSWORD,
     CONF_PHONE_UID,
@@ -117,15 +118,16 @@ def _reconfigure_credential_schema(defaults: Mapping[str, Any] | None = None) ->
     )
 
 
-def _systems_mqtt_schema(
+def _combined_system_options(
     systems: Sequence[Mapping[str, Any]],
-    defaults: Mapping[str, Any] | None = None,
-) -> vol.Schema:
-    """Build the combined systems + MQTT options schema."""
-    defaults = defaults or {}
-    options: list[selector.SelectOptionDict] = []
-    default_selection = list(defaults.get(CONF_SELECTED_SYSTEMS, []))
+) -> list[selector.SelectOptionDict]:
+    """Build dropdown options from discovered systems (systemId/id convention).
 
+    Shared by the config/reconfigure combined systems+MQTT step and the
+    MQTT-system selection step in those same flows, so both steps agree on
+    the same system ids.
+    """
+    options: list[selector.SelectOptionDict] = []
     for system in systems:
         system_id = str(system.get("systemId") or system.get("id") or "")
         if not system_id:
@@ -141,6 +143,43 @@ def _systems_mqtt_schema(
         if system_no and system_no not in system_name:
             label = f"{system_name} ({system_no})"
         options.append(selector.SelectOptionDict(value=system_id, label=label))
+    return options
+
+
+def _mqtt_system_schema(
+    options: list[selector.SelectOptionDict],
+    default_system_id: str | None,
+) -> vol.Schema:
+    """Build the single-select MQTT-system schema.
+
+    `options` must already be restricted by the caller to the systems
+    selected in this same flow - not the full discovered system list -
+    since only a selected system can ever be the MQTT system.
+    """
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_MQTT_SYSTEM_ID,
+                default=default_system_id,
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=options,
+                    multiple=False,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        }
+    )
+
+
+def _systems_mqtt_schema(
+    systems: Sequence[Mapping[str, Any]],
+    defaults: Mapping[str, Any] | None = None,
+) -> vol.Schema:
+    """Build the combined systems + MQTT options schema."""
+    defaults = defaults or {}
+    options = _combined_system_options(systems)
+    default_selection = list(defaults.get(CONF_SELECTED_SYSTEMS, []))
 
     return vol.Schema(
         {
@@ -217,7 +256,7 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the config flow for Jackery Home Cloud."""
 
     VERSION = 1
-    MINOR_VERSION = 4
+    MINOR_VERSION = 5
 
     def __init__(self) -> None:
         self._pending_entry_data: dict[str, Any] = {}
@@ -326,6 +365,14 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 if crypto_key:
                     self._pending_options[CONF_CRYPTO_KEY] = crypto_key
+
+                if not enable_mqtt:
+                    self._pending_options[CONF_MQTT_SYSTEM_ID] = None
+                elif len(selected_systems) == 1:
+                    self._pending_options[CONF_MQTT_SYSTEM_ID] = selected_systems[0]
+                else:
+                    return await self.async_step_mqtt_system()
+
                 return self.async_create_entry(
                     title=self._entry_title,
                     data=self._pending_entry_data,
@@ -352,6 +399,35 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="systems",
             data_schema=_systems_mqtt_schema(self._discovered_systems, defaults),
             errors=errors,
+        )
+
+    async def async_step_mqtt_system(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select which selected system receives MQTT telemetry/controls.
+
+        Only reached when MQTT is enabled and 2+ systems are selected (a
+        single selected system is auto-stored by async_step_systems without
+        this extra step).
+        """
+        if user_input is not None:
+            self._pending_options[CONF_MQTT_SYSTEM_ID] = str(user_input[CONF_MQTT_SYSTEM_ID])
+            return self.async_create_entry(
+                title=self._entry_title,
+                data=self._pending_entry_data,
+                options=self._pending_options,
+            )
+
+        selected_systems = list(self._pending_options.get(CONF_SELECTED_SYSTEMS, []))
+        options = [
+            option
+            for option in _combined_system_options(self._discovered_systems)
+            if option["value"] in selected_systems
+        ]
+        default_system_id = selected_systems[0] if selected_systems else None
+        return self.async_show_form(
+            step_id="mqtt_system",
+            data_schema=_mqtt_system_schema(options, default_system_id),
         )
 
     async def async_step_reauth(self, _: Mapping[str, Any]) -> FlowResult:
@@ -494,13 +570,19 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 if crypto_key:
                     new_options[CONF_CRYPTO_KEY] = crypto_key
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data=new_data,
-                    options=new_options,
-                )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reconfigure_successful")
+
+                if not enable_mqtt:
+                    pass  # preserve whatever CONF_MQTT_SYSTEM_ID new_options already carries
+                elif len(selected_systems) == 1:
+                    new_options[CONF_MQTT_SYSTEM_ID] = selected_systems[0]
+                else:
+                    self._pending_entry_data = new_data
+                    self._pending_options = new_options
+                    return await self.async_step_reconfigure_mqtt_system()
+
+                self._pending_entry_data = new_data
+                self._pending_options = new_options
+                return await self._finish_reconfigure()
 
         defaults = {
             CONF_SELECTED_SYSTEMS: self._pending_options.get(
@@ -530,6 +612,46 @@ class JackeryHomeCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reconfigure_mqtt_system(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select which selected system receives MQTT telemetry/controls.
+
+        Only reached when MQTT is enabled and 2+ systems are selected (a
+        single selected system is auto-stored by
+        async_step_reconfigure_systems without this extra step).
+        """
+        if user_input is not None:
+            self._pending_options[CONF_MQTT_SYSTEM_ID] = str(user_input[CONF_MQTT_SYSTEM_ID])
+            return await self._finish_reconfigure()
+
+        selected_systems = list(self._pending_options.get(CONF_SELECTED_SYSTEMS, []))
+        options = [
+            option
+            for option in _combined_system_options(self._discovered_systems)
+            if option["value"] in selected_systems
+        ]
+        current = str(self._get_reconfigure_entry().options.get(CONF_MQTT_SYSTEM_ID) or "")
+        default_system_id = (
+            current if current in selected_systems
+            else (selected_systems[0] if selected_systems else None)
+        )
+        return self.async_show_form(
+            step_id="reconfigure_mqtt_system",
+            data_schema=_mqtt_system_schema(options, default_system_id),
+        )
+
+    async def _finish_reconfigure(self) -> FlowResult:
+        """Persist the pending reconfigure data/options and reload the entry."""
+        entry = self._get_reconfigure_entry()
+        self.hass.config_entries.async_update_entry(
+            entry,
+            data=self._pending_entry_data,
+            options=self._pending_options,
+        )
+        await self.hass.config_entries.async_reload(entry.entry_id)
+        return self.async_abort(reason="reconfigure_successful")
+
     def _prepare_credential_input(self, user_input: Mapping[str, Any]) -> dict[str, Any]:
         """Normalize the first-step credentials and connection toggles."""
         account = str(user_input[CONF_ACCOUNT]).strip()
@@ -549,6 +671,10 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
     The main user-facing path should now be the symmetric reconfigure flow.
     This flow remains available and keeps all MQTT options on one page.
     """
+
+    def __init__(self) -> None:
+        self._pending_options: dict[str, Any] = {}
+        self._discovered_systems: list[dict[str, Any]] = []
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -614,6 +740,16 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
                 )
                 if crypto_key:
                     data[CONF_CRYPTO_KEY] = crypto_key
+
+                if not enable_mqtt:
+                    pass  # preserve whatever CONF_MQTT_SYSTEM_ID data already carries
+                elif len(selected) == 1:
+                    data[CONF_MQTT_SYSTEM_ID] = selected[0]
+                else:
+                    self._pending_options = data
+                    self._discovered_systems = systems
+                    return await self.async_step_mqtt_system()
+
                 return self.async_create_entry(data=data)
 
         current_selection = self.config_entry.options.get(CONF_SELECTED_SYSTEMS, [])
@@ -654,6 +790,32 @@ class JackeryHomeCloudOptionsFlow(OptionsFlowWithReload):
         )
 
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+    async def async_step_mqtt_system(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select which selected system receives MQTT telemetry/controls.
+
+        Only reached when MQTT is enabled and 2+ systems are selected (a
+        single selected system is auto-stored by async_step_init without
+        this extra step).
+        """
+        if user_input is not None:
+            self._pending_options[CONF_MQTT_SYSTEM_ID] = str(user_input[CONF_MQTT_SYSTEM_ID])
+            return self.async_create_entry(data=self._pending_options)
+
+        selected = self._pending_options.get(CONF_SELECTED_SYSTEMS, [])
+        options = [
+            option
+            for option in _system_options(self._discovered_systems)
+            if option["value"] in selected
+        ]
+        current = str(self.config_entry.options.get(CONF_MQTT_SYSTEM_ID) or "")
+        default_system_id = current if current in selected else (selected[0] if selected else None)
+        return self.async_show_form(
+            step_id="mqtt_system",
+            data_schema=_mqtt_system_schema(options, default_system_id),
+        )
 
     def _systems_from_runtime_cache(self) -> list[dict[str, Any]]:
         runtime = getattr(self.config_entry, "runtime_data", None)

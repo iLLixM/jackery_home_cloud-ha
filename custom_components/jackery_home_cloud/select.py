@@ -73,24 +73,29 @@ async def async_setup_entry(
         device_sn = _extract_system_device_sn(bundle)
         if not device_sn:
             continue
-        entities.append(
-            JackeryWorkModeSelect(
+        model_confirmed = coordinator.is_model_confirmed(system_id)
+        if coordinator.supports_meter(system_id, MQTT_EMS_WORK_MODE_METER_ID):
+            entity = JackeryWorkModeSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
-        entities.append(
-            JackeryOutputPowerLimitSelect(
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
+        if coordinator.supports_meter(system_id, MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID):
+            entity = JackeryOutputPowerLimitSelect(
                 coordinator=coordinator,
                 system_id=str(system_id),
                 bundle=bundle,
                 mqtt_client=runtime.mqtt_client,
                 device_sn=device_sn,
             )
-        )
+            if not model_confirmed:
+                entity._attr_entity_registry_enabled_default = False
+            entities.append(entity)
 
     if entities:
         async_add_entities(entities)
@@ -142,7 +147,7 @@ class JackeryWorkModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], Sele
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def current_option(self) -> str | None:
@@ -251,7 +256,7 @@ class JackeryOutputPowerLimitSelect(CoordinatorEntity[JackeryHomeCloudCoordinato
     @property
     def available(self) -> bool:
         """Return availability based on device serial and MQTT connectivity."""
-        return bool(self._device_sn) and super().available
+        return self.coordinator.is_control_available(self._system_id, self._device_sn)
 
     @property
     def current_option(self) -> str | None:

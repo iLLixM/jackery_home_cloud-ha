@@ -55,7 +55,7 @@ Each selected Jackery system is represented as one device in Home Assistant.
 
 This keeps the integration understandable and avoids unnecessary clutter from multiple internal cloud-side components that are not independently modeled by the integration.
 
-For accounts with multiple systems, REST entities remain available for every selected system. The current MQTT implementation is intentionally limited to one automatically resolved primary system per config entry.
+For accounts with multiple systems, REST entities remain available for every selected system. The current MQTT implementation is intentionally limited to one explicitly user-selected system per config entry.
 
 ### Live cloud data
 
@@ -246,16 +246,18 @@ These include, depending on device support:
 
 REST remains available for all selected systems.
 
-The initial MQTT architecture supports one primary MQTT system per config entry:
+Because the Jackery MQTT broker connection only ever subscribes to a single device's topics, exactly one selected system can receive MQTT telemetry and controls:
 
-- the integration automatically resolves one eligible system and device serial
-- the resolved primary remains frozen for the lifetime of the loaded config entry
-- MQTT subscriptions, polling, live-value overlays, diagnostics, controls, and writes are limited to that system
-- secondary systems continue in REST-only mode
+- If only one system is selected, it is used automatically - no extra step is shown.
+- If two or more systems are selected and MQTT is enabled, a dedicated "Select the MQTT system" step lets you choose which one; the others remain REST-only.
+- MQTT subscriptions, polling, live-value overlays, diagnostics, controls, and writes are limited to the selected MQTT system.
+- The choice can be changed at any time via Reconfigure (or the options flow), and takes effect immediately - both flows reload the integration entry automatically.
 
-A config-entry reload or reconfiguration recreates the coordinator and can resolve the primary system again.
+Existing installations upgraded from an earlier release are migrated automatically. With a single selected system, it's picked immediately. With more than one, the choice is resolved on the first refresh after upgrading (the first selected system that exposes a usable MQTT connection, matching the previous automatic behavior) rather than guessed at migration time - this avoids picking a system that turns out not to support MQTT and getting stuck retrying setup. Either way, the result can be changed via Reconfigure at any time.
 
-Explicit MQTT-system selection and fully validated multi-system MQTT support are planned follow-up improvements.
+The currently configured and resolved MQTT system is exposed in Settings -> Devices & Services -> Jackery Home Cloud -> Download diagnostics.
+
+Validated multi-system MQTT support (more than one system receiving MQTT simultaneously) is planned for a later release.
 
 ### Simplified configuration flows
 
