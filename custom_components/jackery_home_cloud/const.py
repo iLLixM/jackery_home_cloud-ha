@@ -87,17 +87,14 @@ MQTT_EMS_PV_ENERGY_TOTAL_METER_ID = "16961537"
 MQTT_EMS_REBOOT_METER_ID = "22027265"
 MQTT_EMS_AC_OUTPUT_METER_ID = "23120897"
 
-# Candidate, unconfirmed: value/scale inferred from observed MQTT traffic
-# compared against the REST-reported SOC, not from a PROPERTY_MAP entry. See
-# CONTRIBUTING.md's MQTT-vs-REST validation checklist before removing this
-# hedge.
+# confirmed: value/scale validated from observed MQTT traffic
+# PROPERTY_MAPPING "21548033":"HB-EMS-MODEL_systemSoc"
 MQTT_EMS_BATTERY_SOC_METER_ID: str = "21548033"
 MQTT_EMS_BATTERY_SOC_SCALE = 10.0
 
-# Candidate, unconfirmed: values/scale inferred from observed MQTT traffic
-# compared against the REST-reported PV power, not from a PROPERTY_MAP entry.
-# See CONTRIBUTING.md's MQTT-vs-REST validation checklist before removing
-# this hedge.
+# confirmed: value/scale validated from observed MQTT traffic
+# PROPERTY_MAPPING "50490369": "HB-PCS-MODEL_pvP1"
+# PROPERTY_MAPPING "50490370": "HB-PCS-MODEL_pvP2"
 MQTT_PCS_PV1_POWER_METER_ID = "50490369"
 MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 
