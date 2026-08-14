@@ -158,6 +158,8 @@ MQTT_EMS_GRID_POWER_METER_ID: str = "16930817"
 
 # Power delivered through the unit's own physical AC output sockets,
 # gated by the AC output relay (MQTT_EMS_AC_OUTPUT_METER_ID).
+# negative while external power is fed into the AC socket
+# positive while power is consumed externally from the AC socket
 # PROPERTY_MAPPING "16933889":"HB-EMS-MODEL_epsLoadPower"
 MQTT_EMS_EPS_LOAD_POWER_METER_ID: str = "16933889"
 
