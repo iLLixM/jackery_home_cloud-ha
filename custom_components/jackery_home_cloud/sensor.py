@@ -33,7 +33,7 @@ from .const import (
     MQTT_EMS_CHARGE_WINDOW_METER_IDS,
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
 )
-from .coordinator import JackeryHomeCloudCoordinator
+from .coordinator import JackeryHomeCloudCoordinator, _validate_and_pad_schedule_raw
 
 PARALLEL_UPDATES = 0
 
@@ -719,6 +719,16 @@ class JackeryScheduleSensor(JackeryBaseSensor):
         if not 0 <= slot <= 9:
             raise HomeAssistantError(f"Jackery schedule slot must be 0-9, got {slot}.")
         raw_value = f"{start:%H%M}{end:%H%M}"
+        # Reuses coordinator.py's ingestion-side validator so the write path
+        # and the MQTT read-back path can never accept a window one way and
+        # reject it the other (see CONTRIBUTING.md #2) - a window rejected
+        # here would otherwise fail write verification with a confusing
+        # timeout instead of this clear, immediate error.
+        if _validate_and_pad_schedule_raw(raw_value) is None:
+            raise HomeAssistantError(
+                f"Jackery schedule window start ({start:%H:%M}) must be strictly before "
+                f"end ({end:%H:%M}); overnight-spanning windows are not supported."
+            )
         await self.coordinator.async_set_meter_value(
             system_id=self._system_id,
             meter_id=meter_ids[slot],
@@ -743,13 +753,26 @@ class JackeryScheduleSensor(JackeryBaseSensor):
         )
 
 
-def _schedule_windows(bundle: Mapping[str, Any], key_prefix: str) -> list[str]:
-    """Return formatted HH:MM-HH:MM strings for populated schedule slots."""
-    windows: list[str] = []
+def _schedule_windows(bundle: Mapping[str, Any], key_prefix: str) -> list[dict[str, Any]]:
+    """Return {"slot", "start", "end"} entries for populated schedule slots.
+
+    No length/content re-validation here: coordinator.py's
+    _validate_and_pad_schedule_raw() is the single source of truth for
+    schedule-window validity, applied at MQTT ingestion time, so any value
+    reaching this bundle key is already a confirmed "0" sentinel or an
+    8-digit HHMMHHMM string.
+    """
+    windows: list[dict[str, Any]] = []
     for index in range(10):
         raw = bundle.get(f"{key_prefix}{index}")
-        if isinstance(raw, str) and raw != "0" and len(raw) == 8:
-            windows.append(f"{raw[0:2]}:{raw[2:4]}-{raw[4:6]}:{raw[6:8]}")
+        if isinstance(raw, str) and raw != "0":
+            windows.append(
+                {
+                    "slot": index,
+                    "start": f"{raw[0:2]}:{raw[2:4]}",
+                    "end": f"{raw[4:6]}:{raw[6:8]}",
+                }
+            )
     return windows
 
 

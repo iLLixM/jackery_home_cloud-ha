@@ -87,8 +87,14 @@ MQTT_EMS_PV_ENERGY_TOTAL_METER_ID = "16961537"
 MQTT_EMS_REBOOT_METER_ID = "22027265"
 MQTT_EMS_AC_OUTPUT_METER_ID = "23120897"
 
+# confirmed: value/scale validated from observed MQTT traffic
+# PROPERTY_MAPPING "21548033":"HB-EMS-MODEL_systemSoc"
 MQTT_EMS_BATTERY_SOC_METER_ID: str = "21548033"
 MQTT_EMS_BATTERY_SOC_SCALE = 10.0
+
+# confirmed: value/scale validated from observed MQTT traffic
+# PROPERTY_MAPPING "50490369": "HB-PCS-MODEL_pvP1"
+# PROPERTY_MAPPING "50490370": "HB-PCS-MODEL_pvP2"
 MQTT_PCS_PV1_POWER_METER_ID = "50490369"
 MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 
@@ -100,6 +106,19 @@ MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 # coordinator.py from battery_power_mqtt's sign (REST ac_main_power's sign is
 # always the opposite of MQTT_BMS1_BATTERY_POWER_METER_ID's). Do not assume
 # this raw meter is signed if reading it directly elsewhere.
+# Candidate, unconfirmed: the meter ID -> field mapping itself is not backed
+# by a PROPERTY_MAP entry, only by observed traffic. See CONTRIBUTING.md's
+# MQTT-vs-REST / AC main power sign validation checklist before removing
+# this hedge.
+# Confirmed via live validation on 2026-08-09: the sign derivation above
+# (math.copysign(ac_main_magnitude, -battery_power_signed)) produced the
+# physically correct sign during both a user-triggered forced charge
+# (negative) and a user-triggered discharge (positive), cross-checked
+# against the battery_soc trend and an exact grid_power match with REST at
+# the same moment. The magnitude/scale of this raw meter is still NOT
+# independently confirmed - REST's own acMainPower value cannot serve as a
+# fast ground truth for that comparison (see the cloud-side lag note on
+# MQTT_EMS_OTHER_LOAD_POWER_METER_ID below).
 MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
 
 # Instantaneous system battery charge/discharge power reported by the EMS.
@@ -120,6 +139,15 @@ MQTT_BMS1_BATTERY_POWER_METER_ID: str = "33659905"
 # confuse with the unsigned MQTT_PCS_AC_MAIN_POWER_METER_ID above - they
 # read the same value only when grid_power is ~0.
 # PROPERTY_MAPPING "16936961":"HB-EMS-MODEL_otherLoadPower"
+# Confirmed via live validation on 2026-08-09: REST's otherLoadPower (and
+# acMainPower above) update noticeably slower on Jackery's cloud backend
+# than grid_power/soc do. During a live forced-charge -> discharge
+# transition, REST's value for this field stayed frozen across several
+# consecutive successful REST polls (confirmed via
+# coordinator.last_rest_update_success_at advancing) while MQTT tracked the
+# real change immediately. A REST/MQTT mismatch on this specific field is
+# not by itself evidence of a wrong MQTT mapping - check whether REST has
+# actually caught up before concluding anything.
 MQTT_EMS_OTHER_LOAD_POWER_METER_ID: str = "16936961"
 
 # Raw value is sign-flipped relative to REST grid_power, so store as -raw.

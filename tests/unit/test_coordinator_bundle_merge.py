@@ -145,6 +145,30 @@ class TestAcMainPowerSignDerivation:
         merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
         assert merged["ac_main_power_mqtt"] == -42.0
 
+    @freeze_time("2026-01-01 12:00:00")
+    def test_battery_power_freshness_boundary_still_flips_sign(self):
+        """battery_power_mqtt's own freshness gate (evaluated in the
+        general power-value loop, separate from ac_main's own gate) is
+        exactly at its boundary here, not stale - the general freshness
+        loop's `<=` comparison (same as ac_main's own, see
+        test_ac_main_freshness_boundary_is_inclusive) must still merge it
+        into `merged`, so the sign-derivation step immediately after can
+        still read it and flip ac_main's sign, rather than silently falling
+        back to unsigned because it looked for staleness in the wrong
+        place."""
+        now = dt_util.utcnow()
+        boundary_timestamp = now - timedelta(seconds=120)
+        live = {
+            "battery_power_mqtt": 1390.0,
+            "battery_power_mqtt_at": boundary_timestamp,
+            "ac_main_power_mqtt": 1469.0,
+            "ac_main_power_mqtt_at": now,
+        }
+        coordinator = _make_coordinator(live)
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+        assert merged["battery_power_mqtt"] == 1390.0
+        assert merged["ac_main_power_mqtt"] == -1469.0
+
 
 class TestPowerValueFreshnessGating:
     @freeze_time("2026-01-01 12:00:00")

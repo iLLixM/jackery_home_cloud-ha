@@ -48,6 +48,16 @@ documentation behind it. When you add or touch one:
   only accepts `data_report` silently drops every solicited response
   (`data_get` replies, `data_set` write confirmations) for whichever meter
   it wasn't specifically hand-tuned for.
+- **Confirmed: charge/discharge schedule windows must be same-day
+  (`start < end`); the official Jackery app itself refuses to save a
+  window where the end time is not strictly after the start time.**
+  Tested directly against the app's schedule editor, not inferred from
+  protocol traffic — the app has no overnight-spanning (`22:00 -> 06:00`
+  style) schedule option. `_validate_and_pad_schedule_raw()` in
+  `coordinator.py` enforces this same same-day rule on both the MQTT
+  ingestion and write paths so a window can never be accepted one way and
+  rejected the other; see that function's docstring for detail before
+  loosening this constraint.
 
 ## 3. Polling and MQTT/REST freshness
 

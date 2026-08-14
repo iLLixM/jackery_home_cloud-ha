@@ -87,6 +87,10 @@ class TestInit:
         client = _make_client(device_serial="  SN123  ")
         assert client._device_serial == "SN123"
 
+    def test_publish_count_starts_at_zero(self):
+        client = _make_client()
+        assert client.publish_count == 0
+
 
 class TestOnConnect:
     async def test_success_subscribes_and_reports_connected(self):
@@ -388,6 +392,7 @@ class TestSyncPublishJson:
         assert published["payload_text"] == json.dumps({"b": 1, "a": 2}, separators=(",", ":"))
         assert published["qos"] == 2
         assert published["waited"] is True
+        assert client.publish_count == 1
 
     def test_raises_when_broker_reports_failure_rc(self):
         client = _make_client()
@@ -408,6 +413,35 @@ class TestSyncPublishJson:
 
         with pytest.raises(JackeryHomeMqttError, match="rc="):
             client._sync_publish_json("cmd/topic", {"a": 1})
+
+        assert client.publish_count == 0
+
+    def test_publish_count_accumulates_across_calls_regardless_of_caller(self):
+        """publish_count must reflect every successful publish through this
+        client, not just ones the coordinator initiated - this is what lets
+        diagnostics count publishes from entity platforms (number/select/
+        switch/button) too, not only the coordinator's own two paths."""
+        client = _make_client()
+        client._started = True
+        client._connected = True
+
+        class _FakeInfo:
+            rc = mqtt.MQTT_ERR_SUCCESS
+
+            def wait_for_publish(self):
+                pass
+
+        class _FakePahoClient:
+            def publish(self, topic, payload_text, qos):
+                return _FakeInfo()
+
+        client._client = _FakePahoClient()
+
+        client._sync_publish_json("cmd/topic", {"a": 1})
+        client._sync_publish_json("cmd/topic", {"a": 2})
+        client._sync_publish_json("cmd/topic", {"a": 3})
+
+        assert client.publish_count == 3
 
 
 class TestAsyncPublishJson:

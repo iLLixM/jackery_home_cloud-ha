@@ -13,7 +13,13 @@ upgrading user.
 
 from __future__ import annotations
 
-from custom_components.jackery_home_cloud.sensor import SYSTEM_SENSOR_DESCRIPTIONS
+from typing import Any
+
+from custom_components.jackery_home_cloud.diagnostics import _PROTOCOL_VALIDATION_METERS
+from custom_components.jackery_home_cloud.sensor import (
+    SYSTEM_SENSOR_DESCRIPTIONS,
+    _mqtt_or_rest,
+)
 
 # Pinned snapshot of every shipped sensor `key`. This is the "vocabulary"
 # behind `unique_id = f"{unique_source}_{key}"` for every simple
@@ -122,3 +128,50 @@ def test_battery_power_and_bms1_are_distinct_entities():
     # Cross-reading the wrong bundle key must not accidentally match.
     assert battery_power.value_fn({"battery_power_bms1_mqtt": 456}) is None
     assert battery_power_bms1.value_fn({"battery_power_mqtt": 123}) is None
+
+
+class TestMqttOrRestPrecedence:
+    """discussion #6 Phase 3, item 10 ("Validate MQTT values against
+    REST") regression-coverage gap: _mqtt_or_rest itself had no direct
+    test coverage before this."""
+
+    def test_prefers_mqtt_when_present(self):
+        assert _mqtt_or_rest({"grid_power_mqtt": 100.0}, "grid_power_mqtt", 200.0) == 100.0
+
+    def test_falls_back_to_rest_when_mqtt_key_absent(self):
+        assert _mqtt_or_rest({}, "grid_power_mqtt", 200.0) == 200.0
+
+    def test_returns_none_when_both_absent(self):
+        assert _mqtt_or_rest({}, "grid_power_mqtt", None) is None
+
+    def test_falls_back_to_rest_when_mqtt_value_is_not_coercible(self):
+        assert _mqtt_or_rest({"grid_power_mqtt": None}, "grid_power_mqtt", 200.0) == 200.0
+
+
+def _nest(path: tuple[str, ...], value: Any) -> dict[str, Any]:
+    bundle: dict[str, Any] = {}
+    cursor = bundle
+    for key in path[:-1]:
+        cursor[key] = {}
+        cursor = cursor[key]
+    cursor[path[-1]] = value
+    return bundle
+
+
+class TestSixMeterValueFnWiring:
+    """Locks in which mqtt_key/REST path each of the 6 protocol-validation-
+    scope sensors reads, so a future edit can't silently swap two meters -
+    the same failure mode CONTRIBUTING.md #6 warns about for bundle-key
+    renames, applied here to a lambda's captured constants instead of a
+    coordinator bundle write."""
+
+    def test_each_meter_prefers_its_own_mqtt_key_and_falls_back_to_its_own_rest_path(self):
+        descriptions_by_key = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+        for sensor_key, mqtt_key, rest_path in _PROTOCOL_VALIDATION_METERS:
+            description = descriptions_by_key[sensor_key]
+
+            mqtt_bundle = {mqtt_key: 111.0, **_nest(rest_path, 222.0)}
+            assert description.value_fn(mqtt_bundle) == 111.0, sensor_key
+
+            rest_only_bundle = _nest(rest_path, 222.0)
+            assert description.value_fn(rest_only_bundle) == 222.0, sensor_key
