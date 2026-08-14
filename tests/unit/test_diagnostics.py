@@ -31,7 +31,7 @@ from custom_components.jackery_home_cloud.coordinator import JackeryMqttSystem
 REDACTED = "**REDACTED**"
 
 
-def _entry(*, data=None, options=None, coordinator=None) -> MockConfigEntry:
+def _entry(*, data=None, options=None, coordinator=None, mqtt_client=None) -> MockConfigEntry:
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=data
@@ -47,7 +47,9 @@ def _entry(*, data=None, options=None, coordinator=None) -> MockConfigEntry:
             CONF_MQTT_SYSTEM_ID: "1",
         },
     )
-    entry.runtime_data = SimpleNamespace(coordinator=coordinator) if coordinator is not None else None
+    entry.runtime_data = (
+        SimpleNamespace(coordinator=coordinator, mqtt_client=mqtt_client) if coordinator is not None else None
+    )
     return entry
 
 
@@ -167,7 +169,11 @@ class TestContent:
 
         result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
 
-        assert result["mqtt"]["connection_state"] == {"connected": False, "error": "timeout"}
+        assert result["mqtt"]["connection_state"] == {
+            "connected": False,
+            "error": "timeout",
+            "publish_count": 0,
+        }
 
     async def test_exposes_selected_and_available_system_ids(self, hass):
         entry = _entry(coordinator=_coordinator())
@@ -211,12 +217,25 @@ class TestPhase3Diagnostics:
     improved diagnostics)."""
 
     async def test_exposes_publish_count(self, hass):
-        coordinator = _coordinator(data={"mqtt_state": {"connected": True, "publish_count": 7}})
-        entry = _entry(coordinator=coordinator)
+        """publish_count is sourced from the shared mqtt_client, not from
+        coordinator.data["mqtt_state"] - it must count every publish caller
+        (coordinator and every entity platform), not just the coordinator's
+        own two publish paths."""
+        coordinator = _coordinator(data={"mqtt_state": {"connected": True}})
+        entry = _entry(coordinator=coordinator, mqtt_client=SimpleNamespace(publish_count=7))
 
         result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
 
         assert result["mqtt"]["connection_state"]["publish_count"] == 7
+        assert result["mqtt"]["connection_state"]["connected"] is True
+
+    async def test_publish_count_defaults_to_zero_without_mqtt_client(self, hass):
+        coordinator = _coordinator(data={"mqtt_state": {"connected": True}})
+        entry = _entry(coordinator=coordinator)
+
+        result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["mqtt"]["connection_state"]["publish_count"] == 0
 
     async def test_exposes_last_write_confirmed(self, hass):
         coordinator = _coordinator(

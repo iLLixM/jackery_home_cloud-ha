@@ -65,6 +65,7 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry."""
     runtime = getattr(entry, "runtime_data", None)
     coordinator = getattr(runtime, "coordinator", None)
+    mqtt_client = getattr(runtime, "mqtt_client", None)
     data = (
         dict(coordinator.data)
         if coordinator is not None and isinstance(getattr(coordinator, "data", None), dict)
@@ -111,7 +112,13 @@ async def async_get_config_entry_diagnostics(
             "resolved_device_serial": resolved_device_serial,
             "detected_model": detected_model,
             "capability_source": capability_source,
-            "connection_state": dict(data.get("mqtt_state", {})),
+            "connection_state": {
+                **dict(data.get("mqtt_state", {})),
+                # Counted centrally in JackeryMqttClient.async_publish_json()
+                # so it covers every publish caller (coordinator and every
+                # entity platform), not just the coordinator's own two paths.
+                "publish_count": getattr(mqtt_client, "publish_count", 0),
+            },
             "broker_config": async_redact_data(mqtt_credentials, TO_REDACT),
             "write_state": write_state,
             "subscription_topics": subscription_topics,

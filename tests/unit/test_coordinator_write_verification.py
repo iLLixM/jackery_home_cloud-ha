@@ -87,7 +87,6 @@ def _make_coordinator(
     coordinator._mqtt_live_values = {SYSTEM_ID: live_values if live_values is not None else {}}
     coordinator._meter_write_locks = {}
     coordinator._mqtt_update_events = {}
-    coordinator._mqtt_state = {"publish_count": 0}
     coordinator._mqtt_write_state = {
         "last_confirmed_meter_id": None,
         "last_confirmed_bundle_key": None,
@@ -429,31 +428,6 @@ class TestWriteStateTracking:
 
         assert coordinator._mqtt_write_state["last_error_meter_id"] == METER_ID
         assert "broker unreachable" in coordinator._mqtt_write_state["last_error_message"]
-
-    async def test_publish_count_increments_per_successful_publish(self):
-        async def on_call(call_number):
-            if call_number >= 2:
-                coordinator.data["systems"][SYSTEM_ID][BUNDLE_KEY] = EXPECTED
-                coordinator._mqtt_live_values[SYSTEM_ID][TIMESTAMP_KEY] = dt_util.utcnow()
-
-        publisher = _RecordingPublisher(on_call=on_call)
-        coordinator = _make_coordinator(mqtt_client=publisher)
-
-        await _set_meter_value(coordinator, publisher)
-
-        assert coordinator._mqtt_state["publish_count"] == 2
-
-    async def test_publish_count_does_not_increment_on_publish_failure(self):
-        async def on_call(call_number):
-            raise ConnectionError("broker unreachable")
-
-        publisher = _RecordingPublisher(on_call=on_call)
-        coordinator = _make_coordinator(mqtt_client=publisher)
-
-        with pytest.raises(HomeAssistantError):
-            await _set_meter_value(coordinator, publisher, max_attempts=2)
-
-        assert coordinator._mqtt_state["publish_count"] == 0
 
 
 class TestRefreshGroupCallback:

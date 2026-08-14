@@ -199,7 +199,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_message_at": None,
             "last_message_preview": None,
             "message_count": 0,
-            "publish_count": 0,
             "last_gw_sn": None,
             "last_dev_sn": None,
             "last_method": None,
@@ -670,7 +669,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             try:
                 await mqtt_client.async_publish_json(topic, payload, qos=1)
-                self._mqtt_state["publish_count"] = int(self._mqtt_state.get("publish_count", 0)) + 1
                 _LOGGER.debug(
                     "Requested Jackery %s meter values for %s via MQTT topic %s",
                     log_label,
@@ -833,7 +831,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     }
                     try:
                         await mqtt_client.async_publish_json(topic, payload, qos=1)
-                        self._mqtt_state["publish_count"] = int(self._mqtt_state.get("publish_count", 0)) + 1
                     except Exception as err:
                         last_error = err
                         _LOGGER.debug(
@@ -2662,9 +2659,11 @@ def _validate_and_pad_schedule_raw(raw: str) -> str | None:
     sentinel unchanged, or None if `raw` is invalid: not the sentinel, not
     digits-only, more than 8 digits (zfill only pads, never truncates - see
     CONTRIBUTING.md #2), an hour/minute component outside its native 00-23 /
-    00-59 range, or a window that does not start strictly before it ends
-    (overnight-spanning windows are rejected rather than accepted, per
-    CONTRIBUTING.md's schedule validation note).
+    00-59 range, or a window that does not start strictly before it ends.
+    Overnight-spanning windows are rejected because the official Jackery app
+    itself refuses to save one - confirmed directly against the app's
+    schedule editor, not inferred from protocol traffic; see CONTRIBUTING.md
+    #2 before loosening this.
     """
     if raw == "0":
         return "0"

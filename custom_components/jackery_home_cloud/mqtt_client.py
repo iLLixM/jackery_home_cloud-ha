@@ -55,11 +55,22 @@ class JackeryMqttClient:
         self._client: Any | None = None
         self._started = False
         self._connected = False
+        # Counts every successful async_publish_json() call regardless of
+        # caller (coordinator, or any entity platform's direct publish), so
+        # diagnostics gets one publish count with a stable meaning instead of
+        # one that silently misses whichever callers weren't wired up to
+        # increment it themselves.
+        self._publish_count = 0
 
         if mqtt is None:
             raise JackeryHomeMqttError(
                 "The paho-mqtt package is not available in this runtime."
             )
+
+    @property
+    def publish_count(self) -> int:
+        """Number of successful MQTT publishes made through this client."""
+        return self._publish_count
 
     async def async_start(self) -> None:
         """Connect to the MQTT broker and start the background loop."""
@@ -184,6 +195,10 @@ class JackeryMqttClient:
             raise JackeryHomeMqttError(
                 f"MQTT publish failed with rc={getattr(info, 'rc', 'unknown')}"
             )
+        # Runs in the executor thread (see async_publish_json), but this is a
+        # simple int increment protected by the GIL, and the only reader
+        # (diagnostics) tolerates a stale-by-one read.
+        self._publish_count += 1
 
     def _schedule_status(self, status: dict[str, Any]) -> None:
         self._hass.loop.call_soon_threadsafe(
