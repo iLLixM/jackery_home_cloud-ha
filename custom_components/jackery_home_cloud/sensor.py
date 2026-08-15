@@ -220,6 +220,30 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
     ),
     JackeryMetricDescription(
+        key="eps_load_power_inverted",
+        translation_key="eps_load_power_inverted",
+        name="AC-socket power inverted",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:power-plug",
+        entity_registry_enabled_default=False,
+        # Uses the exact same fresh-MQTT-with-REST-fallback source as
+        # eps_load_power, but reverses its sign for installations where an
+        # external AC-coupled solar inverter feeds power into the socket.
+        value_fn=lambda bundle: _invert_power(
+            _mqtt_or_rest(
+                bundle,
+                "eps_load_power_mqtt",
+                _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "epsLoadPower"),
+            )
+        ),
+        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
+            system_id,
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "deviceNo"),
+        ),
+    ),
+    JackeryMetricDescription(
         key="other_load_power",
         name="Home-supply power",
         native_unit_of_measurement=UnitOfPower.WATT,
@@ -890,6 +914,16 @@ def _mqtt_or_rest(bundle: Mapping[str, Any], mqtt_key: str, rest_value: Any) -> 
     if mqtt_value is not None:
         return mqtt_value
     return _coerce_float(rest_value)
+
+
+def _invert_power(value: Any) -> float | None:
+    """Invert a power value while normalizing negative zero."""
+    numeric_value = _coerce_float(value)
+    if numeric_value is None:
+        return None
+    if numeric_value == 0:
+        return 0.0
+    return -numeric_value
 
 
 def _coerce_int(value: Any) -> int | None:

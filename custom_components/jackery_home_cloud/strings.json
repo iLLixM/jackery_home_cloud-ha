@@ -141,6 +141,9 @@
       "ac_output_energy_out": {
         "name": "AC-Output energy out"
       },
+      "eps_load_power_inverted": {
+        "name": "AC-socket power inverted"
+      },
       "total_battery_capacity": {
         "name": "Total battery capacity"
       }
