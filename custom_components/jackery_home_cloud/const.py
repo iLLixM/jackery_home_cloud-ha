@@ -126,6 +126,14 @@ MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 # fast ground truth for that comparison (see the cloud-side lag note on
 # MQTT_EMS_OTHER_LOAD_POWER_METER_ID below).
 MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
+# Experimental threshold used only for AC Main sign reconstruction.
+#
+# Real-world observations indicate that Jackery internal consumption
+# can cause a negative AC Main flow of roughly a few tens of watts
+# while PV, battery and EPS power are all close to zero.
+#
+# This is a heuristic threshold, not a confirmed protocol constant.
+AC_MAIN_IDLE_POWER_THRESHOLD_W: float = 50.0
 
 # Instantaneous system battery charge/discharge power reported by the EMS.
 # This value is expected to represent the combined battery power of the

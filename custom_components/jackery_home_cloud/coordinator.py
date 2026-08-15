@@ -2241,21 +2241,22 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         #
         # Sign decision priority:
         #
-        # 1. Complete PV + battery + EPS balance
-        #    -> use balance vs. AC Main magnitude plausibility check
+        # 1. Complete PV + battery + EPS data:
+        #    - detect a low-power / idle condition
+        #    - otherwise use the sign of the complete power balance
         #
-        # 2. Battery + EPS available, but PV incomplete/stale
-        #    -> calculate the minimum possible balance assuming PV = 0
-        #    -> if that minimum already proves positive AC Main, use positive
+        # 2. Battery + EPS available, but PV incomplete/stale:
+        #    - use a conservative minimum-balance test that can prove
+        #      a positive direction without assuming PV = 0
         #
-        # 3. PV + battery available, but EPS unavailable/stale
-        #    -> use the previous PV/battery sign heuristic
+        # 3. PV + battery available, but EPS unavailable/stale:
+        #    - use the previous PV/battery sign heuristic
         #
-        # 4. Battery available only
-        #    -> use the original battery-only sign heuristic
+        # 4. Battery available only:
+        #    - use the original battery-only heuristic
         #
-        # 5. No useful sign information
-        #    -> keep the MQTT magnitude unsigned/positive
+        # 5. No usable sign information:
+        #    - keep the MQTT magnitude unsigned/positive
 
         ac_main_timestamp = live.get("ac_main_power_mqtt_at")
         ac_main_magnitude = _coerce_float(live.get("ac_main_power_mqtt"))
@@ -2285,8 +2286,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and pv2_power_value is not None
             )
 
-            # The MQTT value is the AC Main magnitude.
-            # From this point on, only its sign may be changed.
+            # The MQTT meter provides the AC Main magnitude.
+            # Only its sign may be changed below.
             ac_main_magnitude_abs = abs(ac_main_magnitude)
 
             sign_indicator: float | None = None
@@ -2294,9 +2295,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sign_source = "unsigned_fallback"
 
             # ------------------------------------------------------------------
-            # Debug: record every input that can influence the sign decision.
-            # This is intentionally verbose while AC Main semantics are still
-            # being validated against real hardware.
+            # Debug: record every input relevant to the sign decision.
             # ------------------------------------------------------------------
             _LOGGER.debug(
                 "AC main sign evaluation for system %s: "
@@ -2320,7 +2319,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # ------------------------------------------------------------------
             # 1. Complete PV + battery + EPS balance.
             #
-            # Working hypothesis:
+            # Working balance:
             #
             #   balance =
             #       PV1
@@ -2328,7 +2327,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             #     - battery_power
             #     - eps_load_power
             #
-            # Existing sign conventions:
+            # Sign conventions:
             #
             #   battery_power > 0
             #       battery is charging / absorbing power
@@ -2342,8 +2341,10 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             #   eps_load_power < 0
             #       external source feeds power into the AC socket
             #
-            # The balance does NOT explicitly include Jackery's own internal
-            # consumption.
+            # The balance is used only as a direction indicator.
+            # Its absolute value is NOT expected to match ac_main_magnitude,
+            # because internal consumption, conversion losses and measurement
+            # timing can create significant differences.
             # ------------------------------------------------------------------
             if (
                 pv_power_complete
@@ -2357,47 +2358,50 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     - eps_load_power_signed
                 )
 
-                # The measured AC Main magnitude is used as a plausibility
-                # boundary for the sign.
+                # Experimental low-power threshold.
                 #
-                # If AC Main were positive, implied internal consumption would be:
+                # Real-world observations show that, when all known external
+                # power paths are close to zero, the Jackery still consumes
+                # roughly a few tens of watts internally. In that situation
+                # AC Main is expected to be negative even if the calculated
+                # balance is slightly positive because of a few watts of
+                # battery discharge.
                 #
-                #   internal_consumption =
-                #       balance_candidate - ac_main_magnitude_abs
-                #
-                # A negative internal consumption would not be physically
-                # plausible under the current working model.
-                #
-                # Therefore:
-                #
-                #   balance >= magnitude
-                #       -> positive AC Main is plausible
-                #
-                #   balance < magnitude
-                #       -> AC Main is interpreted as negative
-                #
-                # Example: standby/night
-                #
-                #   PV = 0
-                #   battery = -7 W
-                #   EPS = 0
-                #   AC Main magnitude = 10 W
-                #
-                #   balance = +7 W
-                #   7 < 10
-                #   -> AC Main = -10 W
+                # This value is a heuristic, not a confirmed protocol constant.
+                AC_MAIN_IDLE_POWER_THRESHOLD_W = 50.0
 
-                if balance_candidate >= ac_main_magnitude_abs:
+                idle_state = (
+                    abs(pv1_power_value) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                    and abs(pv2_power_value) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                    and abs(battery_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                    and abs(eps_load_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                    and ac_main_magnitude_abs <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                )
+
+                if idle_state:
+                    sign_indicator = -1.0
+                    sign_source = "internal_consumption_idle"
+
+                elif balance_candidate > 0:
+                    # Net power flows from PV/battery/EPS side towards AC Main.
                     sign_indicator = 1.0
                     sign_source = "pv_battery_eps_balance_positive"
-                else:
+
+                elif balance_candidate < 0:
+                    # Net power flows from AC Main towards battery/EPS/internal side.
                     sign_indicator = -1.0
                     sign_source = "pv_battery_eps_balance_negative"
+
+                else:
+                    # Exact zero balance is ambiguous.
+                    sign_indicator = None
+                    sign_source = "zero_balance_fallback"
 
                 _LOGGER.debug(
                     "AC main full balance for system %s: "
                     "pv1=%s + pv2=%s - battery=%s - eps=%s = %s; "
-                    "magnitude=%s; decision=%s; source=%s",
+                    "magnitude=%s; idle_state=%s; "
+                    "decision=%s; source=%s",
                     system_id,
                     pv1_power_value,
                     pv2_power_value,
@@ -2405,39 +2409,32 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     eps_load_power_signed,
                     balance_candidate,
                     ac_main_magnitude_abs,
-                    "+" if sign_indicator > 0 else "-",
+                    idle_state,
+                    (
+                        "+"
+                        if sign_indicator is not None and sign_indicator > 0
+                        else "-"
+                        if sign_indicator is not None and sign_indicator < 0
+                        else "unknown"
+                    ),
                     sign_source,
                 )
 
             # ------------------------------------------------------------------
-            # 2. Battery + EPS are available, but PV telemetry is incomplete.
+            # 2. Battery + EPS available, but PV telemetry incomplete/stale.
             #
-            # Do NOT generally assume that missing/stale PV means zero PV.
+            # Missing PV must NOT generally be treated as zero.
             #
-            # However, because PV power cannot be negative, PV = 0 provides the
+            # However, because PV cannot be negative, PV = 0 gives us the
             # minimum possible balance:
             #
             #   minimum_balance =
             #       -battery_power
             #       -eps_load_power
             #
-            # If this minimum is already >= the measured AC Main magnitude,
-            # the direction must be positive even without knowing the actual PV.
-            #
-            # Example observed on real hardware:
-            #
-            #   battery = +10 W
-            #   EPS = -380 W
-            #   AC Main magnitude = 360 W
-            #
-            #   minimum_balance =
-            #       -10 - (-380)
-            #       = +370 W
-            #
-            #   370 >= 360
-            #   -> AC Main must be positive
-            #
-            # Any real PV generation would only increase that balance.
+            # If this lower bound is already positive, and sufficiently large
+            # to establish a clear export direction, positive AC Main can be
+            # inferred without knowing the actual PV value.
             # ------------------------------------------------------------------
             elif battery_power_available and eps_load_power_available:
                 minimum_balance = (
@@ -2447,43 +2444,36 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                 balance_candidate = minimum_balance
 
-                if minimum_balance >= ac_main_magnitude_abs:
+                # A strictly positive lower bound means any real PV generation
+                # can only make the actual balance more positive.
+                if minimum_balance > 0:
                     sign_indicator = 1.0
                     sign_source = "battery_eps_minimum_balance_positive"
 
                     _LOGGER.debug(
                         "AC main minimum-balance decision for system %s: "
                         "-battery=%s - eps=%s -> minimum_balance=%s; "
-                        "magnitude=%s; decision=+; source=%s",
+                        "PV incomplete; decision=+; source=%s",
                         system_id,
                         battery_power_signed,
                         eps_load_power_signed,
                         minimum_balance,
-                        ac_main_magnitude_abs,
                         sign_source,
                     )
                 else:
-                    # Important:
-                    # minimum_balance < magnitude does NOT prove a negative
-                    # direction because unknown PV generation could still make
+                    # A non-positive lower bound does NOT prove a negative AC Main
+                    # direction, because unknown PV generation could still make
                     # the real balance positive.
-                    #
-                    # Leave sign_indicator unset so the following conservative
-                    # fallback logic can decide.
                     _LOGGER.debug(
                         "AC main minimum balance inconclusive for system %s: "
-                        "minimum_balance=%s < magnitude=%s; "
-                        "PV telemetry incomplete, continuing with fallback logic",
+                        "minimum_balance=%s; PV telemetry incomplete; "
+                        "continuing with fallback logic",
                         system_id,
                         minimum_balance,
-                        ac_main_magnitude_abs,
                     )
 
             # ------------------------------------------------------------------
-            # 3. PV + battery fallback.
-            #
-            # Only reach this decision directly when the complete EPS-aware
-            # balance was not available.
+            # 3. PV + battery fallback when EPS is unavailable/stale.
             # ------------------------------------------------------------------
             if (
                 sign_indicator is None
@@ -2496,9 +2486,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     - battery_power_signed
                 )
 
-                if balance_candidate != 0:
-                    sign_indicator = balance_candidate
-                    sign_source = "pv_battery_fallback"
+                if balance_candidate > 0:
+                    sign_indicator = 1.0
+                    sign_source = "pv_battery_fallback_positive"
+
+                elif balance_candidate < 0:
+                    sign_indicator = -1.0
+                    sign_source = "pv_battery_fallback_negative"
 
                 _LOGGER.debug(
                     "AC main PV/battery fallback for system %s: "
@@ -2515,14 +2509,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # ------------------------------------------------------------------
             # 4. Original battery-only fallback.
-            #
-            # This keeps compatibility with the previously validated behaviour
-            # when neither the complete balance nor a conclusive EPS-assisted
-            # decision is possible.
             # ------------------------------------------------------------------
             if (
                 sign_indicator is None
                 and battery_power_available
+                and battery_power_signed != 0
             ):
                 sign_indicator = -battery_power_signed
                 sign_source = "battery_fallback"
@@ -2550,35 +2541,33 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 ac_main_power_signed = ac_main_magnitude_abs
 
-                if sign_indicator is None:
-                    _LOGGER.debug(
-                        "AC main unsigned fallback for system %s: "
-                        "no usable sign information; magnitude=%s",
-                        system_id,
-                        ac_main_magnitude_abs,
-                    )
-                else:
-                    _LOGGER.debug(
-                        "AC main zero sign-indicator fallback for system %s: "
-                        "sign_indicator=%s; magnitude=%s",
-                        system_id,
-                        sign_indicator,
-                        ac_main_magnitude_abs,
-                    )
+                _LOGGER.debug(
+                    "AC main unsigned fallback for system %s: "
+                    "sign_indicator=%s; magnitude=%s",
+                    system_id,
+                    sign_indicator,
+                    ac_main_magnitude_abs,
+                )
 
-            # ------------------------------------------------------------------
-            # Final debug summary.
-            #
-            # This should be the most useful single line when comparing the
-            # integration against real hardware behaviour.
-            # ------------------------------------------------------------------
+            # Diagnostic only:
+            # This delta is useful for analysing conversion losses, timing
+            # differences and internal consumption, but it is intentionally
+            # NOT used to determine the sign anymore.
+            balance_delta = (
+                balance_candidate - ac_main_magnitude_abs
+                if balance_candidate is not None
+                else None
+            )
+
             _LOGGER.debug(
                 "AC main result for system %s: "
                 "raw_magnitude=%s, balance_candidate=%s, "
-                "sign_indicator=%s, sign_source=%s, final_value=%s",
+                "balance_delta=%s, sign_indicator=%s, "
+                "sign_source=%s, final_value=%s",
                 system_id,
                 ac_main_magnitude_abs,
                 balance_candidate,
+                balance_delta,
                 sign_indicator,
                 sign_source,
                 ac_main_power_signed,
@@ -2586,19 +2575,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             merged["ac_main_power_mqtt"] = ac_main_power_signed
 
-            # Expose the decision provenance in mqtt_live as well. This is useful
-            # while validating the heuristic and can later be reduced if desired.
             mqtt_live["ac_main_power_mqtt"] = {
                 "value": ac_main_power_signed,
                 "source": "mqtt",
                 "raw_magnitude": ac_main_magnitude,
                 "balance_candidate": balance_candidate,
+                "balance_delta": balance_delta,
                 "sign_indicator": sign_indicator,
                 "sign_source": sign_source,
             }
 
         else:
-            # Distinguish a stale/missing AC Main sample from a sign-logic problem.
+            # Distinguish stale/missing AC Main telemetry from a sign-logic issue.
             ac_main_age_seconds = (
                 (now - ac_main_timestamp).total_seconds()
                 if ac_main_timestamp is not None
