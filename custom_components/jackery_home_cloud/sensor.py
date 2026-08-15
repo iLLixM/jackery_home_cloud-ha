@@ -38,6 +38,8 @@ from .coordinator import JackeryHomeCloudCoordinator, _validate_and_pad_schedule
 PARALLEL_UPDATES = 0
 
 MQTT_RESTORE_SENSOR_KEYS: set[str] = {
+    "ac_output_energy_in",
+    "ac_output_energy_out",
     "battery_energy_charged_total",
     "battery_energy_discharged_total",
     "pv1_energy_total",
@@ -295,6 +297,30 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_energy_discharged_total")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ac_output_energy_in",
+        translation_key="ac_output_energy_in",
+        name="AC-Output energy in",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("ac_output_energy_in")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ac_output_energy_out",
+        translation_key="ac_output_energy_out",
+        name="AC-Output energy out",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("ac_output_energy_out")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(

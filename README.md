@@ -123,6 +123,8 @@ The following cumulative energy entities are derived from MQTT meter reports:
 
 - Battery charged
 - Battery discharged
+- AC-Output energy in
+- AC-Output energy out
 - PV1 energy
 - PV2 energy
 - PV energy total
@@ -230,6 +232,8 @@ These include, depending on device support:
 - Battery power BMS1
 - Battery charged
 - Battery discharged
+- AC-Output energy in
+- AC-Output energy out
 - PV1 energy
 - PV2 energy
 - PV energy total

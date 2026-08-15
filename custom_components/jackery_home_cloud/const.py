@@ -86,6 +86,12 @@ MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID = "16967681"
 MQTT_EMS_PV_ENERGY_TOTAL_METER_ID = "16961537"
 MQTT_EMS_REBOOT_METER_ID = "22027265"
 MQTT_EMS_AC_OUTPUT_METER_ID = "23120897"
+# Cumulative energy fed into the unit's physical AC output connection, in kWh.
+# confirmed via PROPERTY_MAP: "16998401":"HB-EMS-MODEL_epsTotalGen"
+MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID = "16998401"
+# Cumulative energy consumed from the unit's physical AC output connection, in kWh.
+# confirmed via PROPERTY_MAP: "16963585":"HB-EMS-MODEL_epsTotalUse"
+MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID = "16963585"
 
 # confirmed: value/scale validated from observed MQTT traffic
 # PROPERTY_MAPPING "21548033":"HB-EMS-MODEL_systemSoc"

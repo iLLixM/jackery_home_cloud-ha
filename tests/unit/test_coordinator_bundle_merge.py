@@ -219,6 +219,60 @@ class TestEnergyCounterFreshnessGating:
         merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
         assert "battery_energy_charged_total" not in merged
 
+    @freeze_time("2026-01-01 12:00:00")
+    def test_fresh_ac_output_energy_in_total_is_merged(self):
+        now = dt_util.utcnow()
+        live = {
+            "ac_output_energy_in": 12.5,
+            "ac_output_energy_in_at": now,
+        }
+        coordinator = _make_coordinator(live)
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_output_energy_in"] == 12.5
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_fresh_ac_output_energy_out_total_is_merged(self):
+        now = dt_util.utcnow()
+        live = {
+            "ac_output_energy_out": 8.25,
+            "ac_output_energy_out_at": now,
+        }
+        coordinator = _make_coordinator(live)
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_output_energy_out"] == 8.25
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_stale_ac_output_energy_total_is_not_merged(self):
+        stale_timestamp = dt_util.utcnow() - timedelta(seconds=901)
+        coordinator = _make_coordinator(
+            {
+                "ac_output_energy_in": 12.5,
+                "ac_output_energy_in_at": stale_timestamp,
+            }
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert "ac_output_energy_in" not in merged
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_stale_ac_output_energy_out_total_is_not_merged(self):
+        stale_timestamp = dt_util.utcnow() - timedelta(seconds=901)
+        coordinator = _make_coordinator(
+            {
+                "ac_output_energy_out": 8.25,
+                "ac_output_energy_out_at": stale_timestamp,
+            }
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert "ac_output_energy_out" not in merged
+
 
 class TestSettingsPersistWithoutFreshnessGate:
     def test_work_mode_raw_has_no_staleness_gate(self):

@@ -45,6 +45,8 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "battery_energy_discharged_today",
         "battery_energy_charged_total",
         "battery_energy_discharged_total",
+        "ac_output_energy_in",
+        "ac_output_energy_out",
         "grid_energy_exported_today",
         "grid_energy_imported_today",
         "pv1_energy_today",
@@ -74,6 +76,8 @@ SIMPLE_UNIQUE_ID_KEYS = frozenset(
         "ac_main_power",
         "battery_power",
         "battery_power_bms1",
+        "ac_output_energy_in",
+        "ac_output_energy_out",
     }
 )
 
@@ -128,6 +132,30 @@ def test_battery_power_and_bms1_are_distinct_entities():
     # Cross-reading the wrong bundle key must not accidentally match.
     assert battery_power.value_fn({"battery_power_bms1_mqtt": 456}) is None
     assert battery_power_bms1.value_fn({"battery_power_mqtt": 123}) is None
+
+
+def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+
+    energy_in_description = descriptions["ac_output_energy_in"]
+    assert energy_in_description.requires_mqtt is True
+    assert energy_in_description.translation_key == "ac_output_energy_in"
+    assert energy_in_description.native_unit_of_measurement == "kWh"
+    assert energy_in_description.device_class == "energy"
+    assert energy_in_description.state_class == "total_increasing"
+    assert energy_in_description.value_fn({"ac_output_energy_in": "12.345"}) == 12.345
+
+
+def test_ac_output_energy_out_sensor_is_mqtt_only_cumulative_energy_counter():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+
+    energy_out_description = descriptions["ac_output_energy_out"]
+    assert energy_out_description.requires_mqtt is True
+    assert energy_out_description.translation_key == "ac_output_energy_out"
+    assert energy_out_description.native_unit_of_measurement == "kWh"
+    assert energy_out_description.device_class == "energy"
+    assert energy_out_description.state_class == "total_increasing"
+    assert energy_out_description.value_fn({"ac_output_energy_out": "12.345"}) == 12.345
 
 
 class TestMqttOrRestPrecedence:

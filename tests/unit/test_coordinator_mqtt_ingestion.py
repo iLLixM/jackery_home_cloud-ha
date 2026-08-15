@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 
 from custom_components.jackery_home_cloud.const import (
+    MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
+    MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_CHARGE_WINDOW_METER_IDS,
@@ -26,6 +28,7 @@ from custom_components.jackery_home_cloud.const import (
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
     JackeryMqttSystem,
+    _TOTALS_EMS_METER_IDS,
     _validate_and_pad_schedule_raw,
 )
 from custom_components.jackery_home_cloud.sensor import _schedule_windows
@@ -62,6 +65,11 @@ def _data_report(gw_sn: str, meter_list: list[list[str]]) -> dict:
             },
         }
     }
+
+
+def test_ac_output_energy_meters_are_in_slow_totals_poll_group():
+    assert MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID in _TOTALS_EMS_METER_IDS
+    assert MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID in _TOTALS_EMS_METER_IDS
 
 
 class TestSecondarySystemIgnored:
@@ -356,6 +364,56 @@ class TestCumulativeEnergyTotalsRejectDecreases:
         coordinator._ingest_mqtt_live_values(message)
 
         assert coordinator._mqtt_live_values[PRIMARY_SYSTEM]["battery_energy_discharged_total"] == 0.5
+
+    def test_ac_output_energy_in_is_ingested(self):
+        coordinator = _make_coordinator()
+        message = _data_report(
+            PRIMARY_SERIAL,
+            [[MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID, "4.125"]],
+        )
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live["ac_output_energy_in"] == 4.125
+        assert live["ac_output_energy_in_source"] == "mqtt"
+
+    def test_ac_output_energy_out_is_ingested(self):
+        coordinator = _make_coordinator()
+        message = _data_report(
+            PRIMARY_SERIAL,
+            [[MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID, "7.875"]],
+        )
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live["ac_output_energy_out"] == 7.875
+        assert live["ac_output_energy_out_source"] == "mqtt"
+
+    def test_decreasing_ac_output_energy_in_value_is_rejected(self):
+        coordinator = _make_coordinator()
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {"ac_output_energy_in": 10.0}
+        message = _data_report(
+            PRIMARY_SERIAL,
+            [[MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID, "3.0"]],
+        )
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        assert coordinator._mqtt_live_values[PRIMARY_SYSTEM]["ac_output_energy_in"] == 10.0
+
+    def test_decreasing_ac_output_energy_out_value_is_rejected(self):
+        coordinator = _make_coordinator()
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {"ac_output_energy_out": 10.0}
+        message = _data_report(
+            PRIMARY_SERIAL,
+            [[MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID, "3.0"]],
+        )
+
+        coordinator._ingest_mqtt_live_values(message)
+
+        assert coordinator._mqtt_live_values[PRIMARY_SYSTEM]["ac_output_energy_out"] == 10.0
 
     def test_pv1_energy_total_has_its_own_independent_guard(self):
         coordinator = _make_coordinator()

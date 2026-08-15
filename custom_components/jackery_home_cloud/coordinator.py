@@ -28,6 +28,8 @@ from .const import (
     DAILY_TREND_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
     MODEL_CAPABILITIES,
+    MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
+    MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_SOC_METER_ID,
@@ -101,6 +103,8 @@ _FAST_PCS_METER_IDS: tuple[str, ...] = (
 _FAST_BMS1_METER_IDS: tuple[str, ...] = (MQTT_BMS1_BATTERY_POWER_METER_ID,)
 
 _TOTALS_EMS_METER_IDS: tuple[str, ...] = (
+    MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
+    MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
@@ -1139,6 +1143,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
         )
+        ac_output_energy_in = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
+        )
+        ac_output_energy_out = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
+        )
         pv1_energy_total = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1264,6 +1278,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if (
             battery_charged_total is None
             and battery_discharged_total is None
+            and ac_output_energy_in is None
+            and ac_output_energy_out is None
             and pv1_energy_total is None
             and pv2_energy_total is None
             and pv_energy_total is None
@@ -1291,6 +1307,64 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         day_key = self._resolve_system_day_key(system_id)
         existing = self._mqtt_live_values.get(system_id, {})
         updated = dict(existing)
+
+        if ac_output_energy_in is not None:
+            previous_value = _coerce_float(existing.get("ac_output_energy_in"))
+            if (
+                previous_value is not None
+                and ac_output_energy_in + _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH
+                < previous_value
+            ):
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT AC output energy in total for %s: "
+                    "incoming=%s previous=%s",
+                    system_id,
+                    ac_output_energy_in,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "ac_output_energy_in": ac_output_energy_in,
+                        "ac_output_energy_in_at": dt_util.utcnow(),
+                        "ac_output_energy_in_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT AC output energy in total for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
+                    ac_output_energy_in,
+                )
+
+        if ac_output_energy_out is not None:
+            previous_value = _coerce_float(existing.get("ac_output_energy_out"))
+            if (
+                previous_value is not None
+                and ac_output_energy_out + _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH
+                < previous_value
+            ):
+                _LOGGER.debug(
+                    "Ignoring decreasing MQTT AC output energy out total for %s: "
+                    "incoming=%s previous=%s",
+                    system_id,
+                    ac_output_energy_out,
+                    previous_value,
+                )
+            else:
+                updated.update(
+                    {
+                        "ac_output_energy_out": ac_output_energy_out,
+                        "ac_output_energy_out_at": dt_util.utcnow(),
+                        "ac_output_energy_out_source": "mqtt",
+                    }
+                )
+                _LOGGER.debug(
+                    "Accepted MQTT AC output energy out total for %s from meter %s: %s kWh",
+                    system_id,
+                    MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
+                    ac_output_energy_out,
+                )
 
         if battery_charged_total is not None:
             previous_value = _coerce_float(existing.get("battery_energy_charged_total"))
@@ -1996,6 +2070,34 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "age_seconds": discharged_total_age_seconds,
                 }
 
+        ac_output_energy_in_timestamp = live.get("ac_output_energy_in_at")
+        ac_output_energy_in_value = _coerce_float(live.get("ac_output_energy_in"))
+        if ac_output_energy_in_value is not None and ac_output_energy_in_timestamp is not None:
+            ac_output_energy_in_age_seconds = (
+                now - ac_output_energy_in_timestamp
+            ).total_seconds()
+            if ac_output_energy_in_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["ac_output_energy_in"] = ac_output_energy_in_value
+                mqtt_live["ac_output_energy_in"] = {
+                    "value": ac_output_energy_in_value,
+                    "source": "mqtt",
+                    "age_seconds": ac_output_energy_in_age_seconds,
+                }
+
+        ac_output_energy_out_timestamp = live.get("ac_output_energy_out_at")
+        ac_output_energy_out_value = _coerce_float(live.get("ac_output_energy_out"))
+        if ac_output_energy_out_value is not None and ac_output_energy_out_timestamp is not None:
+            ac_output_energy_out_age_seconds = (
+                now - ac_output_energy_out_timestamp
+            ).total_seconds()
+            if ac_output_energy_out_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS:
+                merged["ac_output_energy_out"] = ac_output_energy_out_value
+                mqtt_live["ac_output_energy_out"] = {
+                    "value": ac_output_energy_out_value,
+                    "source": "mqtt",
+                    "age_seconds": ac_output_energy_out_age_seconds,
+                }
+
         pv1_total_timestamp = live.get("pv1_energy_total_at")
         pv1_total_value = _coerce_float(live.get("pv1_energy_total"))
         if pv1_total_value is not None and pv1_total_timestamp is not None:
@@ -2130,40 +2232,387 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 merged[key] = value
                 mqtt_live[key] = {"value": value, "source": "mqtt"}
 
-        # ac_main_power_mqtt's raw meter is unsigned (see
-        # MQTT_PCS_AC_MAIN_POWER_METER_ID in const.py); sign it here using
-        # -sign(battery_power_mqtt). Falls back to unsigned if
-        # battery_power_mqtt isn't available/fresh (sign unknown) or is
-        # exactly 0 (sign undefined).
+        # ac_main_power_mqtt's raw MQTT meter is treated as an unsigned magnitude.
+        #
+        # IMPORTANT:
+        # All calculations below are used ONLY to determine the sign.
+        # The absolute AC Main power value always remains the MQTT-derived
+        # ac_main_magnitude and is never recalculated from PV/battery/EPS values.
+        #
+        # Sign decision priority:
+        #
+        # 1. Complete PV + battery + EPS balance
+        #    -> use balance vs. AC Main magnitude plausibility check
+        #
+        # 2. Battery + EPS available, but PV incomplete/stale
+        #    -> calculate the minimum possible balance assuming PV = 0
+        #    -> if that minimum already proves positive AC Main, use positive
+        #
+        # 3. PV + battery available, but EPS unavailable/stale
+        #    -> use the previous PV/battery sign heuristic
+        #
+        # 4. Battery available only
+        #    -> use the original battery-only sign heuristic
+        #
+        # 5. No useful sign information
+        #    -> keep the MQTT magnitude unsigned/positive
+
         ac_main_timestamp = live.get("ac_main_power_mqtt_at")
         ac_main_magnitude = _coerce_float(live.get("ac_main_power_mqtt"))
+
         if (
             ac_main_magnitude is not None
             and ac_main_timestamp is not None
-            and (now - ac_main_timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+            and (now - ac_main_timestamp).total_seconds()
+            <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
         ):
             battery_power_signed = merged.get("battery_power_mqtt")
-            if isinstance(battery_power_signed, (int, float)) and battery_power_signed != 0:
-                ac_main_power_signed = math.copysign(ac_main_magnitude, -battery_power_signed)
-            else:
-                ac_main_power_signed = ac_main_magnitude
-            merged["ac_main_power_mqtt"] = ac_main_power_signed
-            mqtt_live["ac_main_power_mqtt"] = {"value": ac_main_power_signed, "source": "mqtt"}
+            eps_load_power_signed = merged.get("eps_load_power_mqtt")
 
-        if daily_energy:
-            merged["daily_energy"] = daily_energy
-        ac_output_timestamp = live.get("ac_output_state_at")
-        ac_output_value = live.get("ac_output_state")
-        if isinstance(ac_output_value, bool):
-            merged["ac_output_state"] = ac_output_value
-            ac_output_age_seconds = None
-            if ac_output_timestamp is not None:
-                ac_output_age_seconds = (now - ac_output_timestamp).total_seconds()
-            mqtt_live["ac_output_state"] = {
-                "value": ac_output_value,
-                "source": live.get("ac_output_state_source", "mqtt"),
-                "age_seconds": ac_output_age_seconds,
+            battery_power_available = isinstance(
+                battery_power_signed,
+                (int, float),
+            )
+            eps_load_power_available = isinstance(
+                eps_load_power_signed,
+                (int, float),
+            )
+
+            pv_power_complete = (
+                pv1_power_fresh
+                and pv2_power_fresh
+                and pv1_power_value is not None
+                and pv2_power_value is not None
+            )
+
+            # The MQTT value is the AC Main magnitude.
+            # From this point on, only its sign may be changed.
+            ac_main_magnitude_abs = abs(ac_main_magnitude)
+
+            sign_indicator: float | None = None
+            balance_candidate: float | None = None
+            sign_source = "unsigned_fallback"
+
+            # ------------------------------------------------------------------
+            # Debug: record every input that can influence the sign decision.
+            # This is intentionally verbose while AC Main semantics are still
+            # being validated against real hardware.
+            # ------------------------------------------------------------------
+            _LOGGER.debug(
+                "AC main sign evaluation for system %s: "
+                "magnitude=%s, "
+                "pv1=%s (fresh=%s), "
+                "pv2=%s (fresh=%s), "
+                "battery=%s (available=%s), "
+                "eps=%s (available=%s)",
+                system_id,
+                ac_main_magnitude_abs,
+                pv1_power_value,
+                pv1_power_fresh,
+                pv2_power_value,
+                pv2_power_fresh,
+                battery_power_signed,
+                battery_power_available,
+                eps_load_power_signed,
+                eps_load_power_available,
+            )
+
+            # ------------------------------------------------------------------
+            # 1. Complete PV + battery + EPS balance.
+            #
+            # Working hypothesis:
+            #
+            #   balance =
+            #       PV1
+            #     + PV2
+            #     - battery_power
+            #     - eps_load_power
+            #
+            # Existing sign conventions:
+            #
+            #   battery_power > 0
+            #       battery is charging / absorbing power
+            #
+            #   battery_power < 0
+            #       battery is discharging / supplying power
+            #
+            #   eps_load_power > 0
+            #       external load consumes power from the AC socket
+            #
+            #   eps_load_power < 0
+            #       external source feeds power into the AC socket
+            #
+            # The balance does NOT explicitly include Jackery's own internal
+            # consumption.
+            # ------------------------------------------------------------------
+            if (
+                pv_power_complete
+                and battery_power_available
+                and eps_load_power_available
+            ):
+                balance_candidate = (
+                    pv1_power_value
+                    + pv2_power_value
+                    - battery_power_signed
+                    - eps_load_power_signed
+                )
+
+                # The measured AC Main magnitude is used as a plausibility
+                # boundary for the sign.
+                #
+                # If AC Main were positive, implied internal consumption would be:
+                #
+                #   internal_consumption =
+                #       balance_candidate - ac_main_magnitude_abs
+                #
+                # A negative internal consumption would not be physically
+                # plausible under the current working model.
+                #
+                # Therefore:
+                #
+                #   balance >= magnitude
+                #       -> positive AC Main is plausible
+                #
+                #   balance < magnitude
+                #       -> AC Main is interpreted as negative
+                #
+                # Example: standby/night
+                #
+                #   PV = 0
+                #   battery = -7 W
+                #   EPS = 0
+                #   AC Main magnitude = 10 W
+                #
+                #   balance = +7 W
+                #   7 < 10
+                #   -> AC Main = -10 W
+
+                if balance_candidate >= ac_main_magnitude_abs:
+                    sign_indicator = 1.0
+                    sign_source = "pv_battery_eps_balance_positive"
+                else:
+                    sign_indicator = -1.0
+                    sign_source = "pv_battery_eps_balance_negative"
+
+                _LOGGER.debug(
+                    "AC main full balance for system %s: "
+                    "pv1=%s + pv2=%s - battery=%s - eps=%s = %s; "
+                    "magnitude=%s; decision=%s; source=%s",
+                    system_id,
+                    pv1_power_value,
+                    pv2_power_value,
+                    battery_power_signed,
+                    eps_load_power_signed,
+                    balance_candidate,
+                    ac_main_magnitude_abs,
+                    "+" if sign_indicator > 0 else "-",
+                    sign_source,
+                )
+
+            # ------------------------------------------------------------------
+            # 2. Battery + EPS are available, but PV telemetry is incomplete.
+            #
+            # Do NOT generally assume that missing/stale PV means zero PV.
+            #
+            # However, because PV power cannot be negative, PV = 0 provides the
+            # minimum possible balance:
+            #
+            #   minimum_balance =
+            #       -battery_power
+            #       -eps_load_power
+            #
+            # If this minimum is already >= the measured AC Main magnitude,
+            # the direction must be positive even without knowing the actual PV.
+            #
+            # Example observed on real hardware:
+            #
+            #   battery = +10 W
+            #   EPS = -380 W
+            #   AC Main magnitude = 360 W
+            #
+            #   minimum_balance =
+            #       -10 - (-380)
+            #       = +370 W
+            #
+            #   370 >= 360
+            #   -> AC Main must be positive
+            #
+            # Any real PV generation would only increase that balance.
+            # ------------------------------------------------------------------
+            elif battery_power_available and eps_load_power_available:
+                minimum_balance = (
+                    -battery_power_signed
+                    - eps_load_power_signed
+                )
+
+                balance_candidate = minimum_balance
+
+                if minimum_balance >= ac_main_magnitude_abs:
+                    sign_indicator = 1.0
+                    sign_source = "battery_eps_minimum_balance_positive"
+
+                    _LOGGER.debug(
+                        "AC main minimum-balance decision for system %s: "
+                        "-battery=%s - eps=%s -> minimum_balance=%s; "
+                        "magnitude=%s; decision=+; source=%s",
+                        system_id,
+                        battery_power_signed,
+                        eps_load_power_signed,
+                        minimum_balance,
+                        ac_main_magnitude_abs,
+                        sign_source,
+                    )
+                else:
+                    # Important:
+                    # minimum_balance < magnitude does NOT prove a negative
+                    # direction because unknown PV generation could still make
+                    # the real balance positive.
+                    #
+                    # Leave sign_indicator unset so the following conservative
+                    # fallback logic can decide.
+                    _LOGGER.debug(
+                        "AC main minimum balance inconclusive for system %s: "
+                        "minimum_balance=%s < magnitude=%s; "
+                        "PV telemetry incomplete, continuing with fallback logic",
+                        system_id,
+                        minimum_balance,
+                        ac_main_magnitude_abs,
+                    )
+
+            # ------------------------------------------------------------------
+            # 3. PV + battery fallback.
+            #
+            # Only reach this decision directly when the complete EPS-aware
+            # balance was not available.
+            # ------------------------------------------------------------------
+            if (
+                sign_indicator is None
+                and pv_power_complete
+                and battery_power_available
+            ):
+                balance_candidate = (
+                    pv1_power_value
+                    + pv2_power_value
+                    - battery_power_signed
+                )
+
+                if balance_candidate != 0:
+                    sign_indicator = balance_candidate
+                    sign_source = "pv_battery_fallback"
+
+                _LOGGER.debug(
+                    "AC main PV/battery fallback for system %s: "
+                    "pv1=%s + pv2=%s - battery=%s = %s; "
+                    "sign_indicator=%s; source=%s",
+                    system_id,
+                    pv1_power_value,
+                    pv2_power_value,
+                    battery_power_signed,
+                    balance_candidate,
+                    sign_indicator,
+                    sign_source,
+                )
+
+            # ------------------------------------------------------------------
+            # 4. Original battery-only fallback.
+            #
+            # This keeps compatibility with the previously validated behaviour
+            # when neither the complete balance nor a conclusive EPS-assisted
+            # decision is possible.
+            # ------------------------------------------------------------------
+            if (
+                sign_indicator is None
+                and battery_power_available
+            ):
+                sign_indicator = -battery_power_signed
+                sign_source = "battery_fallback"
+
+                _LOGGER.debug(
+                    "AC main battery fallback for system %s: "
+                    "battery=%s -> sign_indicator=%s; source=%s",
+                    system_id,
+                    battery_power_signed,
+                    sign_indicator,
+                    sign_source,
+                )
+
+            # ------------------------------------------------------------------
+            # 5. Apply ONLY the selected sign to the raw MQTT magnitude.
+            #
+            # balance_candidate/sign_indicator must NEVER replace the actual
+            # AC Main power magnitude.
+            # ------------------------------------------------------------------
+            if sign_indicator is not None and sign_indicator != 0:
+                ac_main_power_signed = math.copysign(
+                    ac_main_magnitude_abs,
+                    sign_indicator,
+                )
+            else:
+                ac_main_power_signed = ac_main_magnitude_abs
+
+                if sign_indicator is None:
+                    _LOGGER.debug(
+                        "AC main unsigned fallback for system %s: "
+                        "no usable sign information; magnitude=%s",
+                        system_id,
+                        ac_main_magnitude_abs,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "AC main zero sign-indicator fallback for system %s: "
+                        "sign_indicator=%s; magnitude=%s",
+                        system_id,
+                        sign_indicator,
+                        ac_main_magnitude_abs,
+                    )
+
+            # ------------------------------------------------------------------
+            # Final debug summary.
+            #
+            # This should be the most useful single line when comparing the
+            # integration against real hardware behaviour.
+            # ------------------------------------------------------------------
+            _LOGGER.debug(
+                "AC main result for system %s: "
+                "raw_magnitude=%s, balance_candidate=%s, "
+                "sign_indicator=%s, sign_source=%s, final_value=%s",
+                system_id,
+                ac_main_magnitude_abs,
+                balance_candidate,
+                sign_indicator,
+                sign_source,
+                ac_main_power_signed,
+            )
+
+            merged["ac_main_power_mqtt"] = ac_main_power_signed
+
+            # Expose the decision provenance in mqtt_live as well. This is useful
+            # while validating the heuristic and can later be reduced if desired.
+            mqtt_live["ac_main_power_mqtt"] = {
+                "value": ac_main_power_signed,
+                "source": "mqtt",
+                "raw_magnitude": ac_main_magnitude,
+                "balance_candidate": balance_candidate,
+                "sign_indicator": sign_indicator,
+                "sign_source": sign_source,
             }
+
+        else:
+            # Distinguish a stale/missing AC Main sample from a sign-logic problem.
+            ac_main_age_seconds = (
+                (now - ac_main_timestamp).total_seconds()
+                if ac_main_timestamp is not None
+                else None
+            )
+
+            _LOGGER.debug(
+                "Skipping MQTT AC main value for system %s: "
+                "magnitude=%s, timestamp=%s, age_seconds=%s",
+                system_id,
+                ac_main_magnitude,
+                ac_main_timestamp,
+                ac_main_age_seconds,
+            )
 
         device_connection_timestamp = live.get("device_connection_at")
         device_connection_value = live.get("device_connection")
