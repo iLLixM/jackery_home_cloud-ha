@@ -2358,18 +2358,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     - eps_load_power_signed
                 )
 
-                # Experimental low-power threshold.
-                #
-                # Real-world observations show that, when all known external
-                # power paths are close to zero, the Jackery still consumes
-                # roughly a few tens of watts internally. In that situation
-                # AC Main is expected to be negative even if the calculated
-                # balance is slightly positive because of a few watts of
-                # battery discharge.
-                #
-                # This value is a heuristic, not a confirmed protocol constant.
-                AC_MAIN_IDLE_POWER_THRESHOLD_W = 50.0
-
                 idle_state = (
                     abs(pv1_power_value) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
                     and abs(pv2_power_value) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
