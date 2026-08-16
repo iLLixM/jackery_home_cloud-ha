@@ -142,7 +142,7 @@
         "name": "AC-Ausgang Energieverbrauch"
       },
       "eps_load_power_inverted": {
-        "name": "AC-Steckdosenleistung invertiert"
+        "name": "AC-Ausgang Leistung invertiert"
       },
       "total_battery_capacity": {
         "name": "Gesamte Batteriekapazität"
