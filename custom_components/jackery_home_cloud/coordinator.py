@@ -83,6 +83,42 @@ _SOURCE_MATCH_MIN_TOLERANCE_KWH = 0.05
 _SOURCE_MATCH_RELATIVE_TOLERANCE = 0.10
 _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH = 0.01
 
+# Bundle fields whose MQTT overlay is valid only while its source timestamp
+# passes the corresponding freshness gate. Runtime MQTT updates start from the
+# coordinator's current (and therefore potentially already enriched) bundle,
+# so these overlays must be removed before fresh values are applied again.
+# Configuration, schedule and control-state fields are intentionally excluded:
+# they represent the latest known setting rather than a sampled measurement.
+_MQTT_FRESHNESS_GATED_ENERGY_KEYS: frozenset[str] = frozenset(
+    {
+        "battery_energy_charged_total",
+        "battery_energy_discharged_total",
+        "ac_output_energy_in",
+        "ac_output_energy_out",
+        "pv1_energy_total",
+        "pv2_energy_total",
+        "pv_energy_total",
+    }
+)
+_MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
+    {
+        "battery_soc_mqtt",
+        "pv_power_mqtt",
+        "battery_power_mqtt",
+        "battery_power_bms1_mqtt",
+        "other_load_power_mqtt",
+        "grid_power_mqtt",
+        "eps_load_power_mqtt",
+        "ac_main_power_mqtt",
+    }
+)
+_MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS: frozenset[str] = frozenset(
+    {
+        "battery_energy_charged_today",
+        "battery_energy_discharged_today",
+    }
+)
+
 # Meter groups for async_request_*_live_meter_values(), split by how often
 # each meter's value realistically changes. Fast values are polled on the
 # user-configurable interval; totals on a fixed, slower interval; config and
@@ -2030,6 +2066,32 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         daily_energy = dict(merged.get("daily_energy") or {})
         mqtt_live = dict(merged.get("mqtt_live") or {})
 
+        # A runtime MQTT update begins with self.data, which may already
+        # contain overlays from an earlier merge. Remove every sampled MQTT
+        # field that was previously applied, then add it back below only when
+        # its cached source value is still fresh. Without this reset, merely
+        # declining to overwrite a stale value leaves that value and its old
+        # provenance metadata in the bundle indefinitely during a REST outage.
+        for key in (
+            _MQTT_FRESHNESS_GATED_ENERGY_KEYS
+            | _MQTT_FRESHNESS_GATED_POWER_KEYS
+        ):
+            # These top-level names are either explicitly suffixed `_mqtt`
+            # or are MQTT-only cumulative counters, so no REST value can be
+            # hidden behind the overlay. Remove them even if legacy/corrupt
+            # metadata is missing.
+            merged.pop(key, None)
+            mqtt_live.pop(key, None)
+
+        # The daily battery counters live inside the REST/trend summary rather
+        # than as top-level MQTT-only fields. Remove them only when mqtt_live
+        # proves that the current value is an earlier MQTT overlay; a clean REST
+        # bundle has no such metadata and must retain its summary values.
+        for key in _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS:
+            if key in mqtt_live:
+                daily_energy.pop(key, None)
+                mqtt_live.pop(key, None)
+
         charged_timestamp = live.get("battery_energy_charged_today_at")
         charged_day_key = live.get("battery_energy_charged_today_day_key")
         charged_value = _coerce_float(live.get("battery_energy_charged_today"))
@@ -2651,6 +2713,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # AC-main branch: daily energy is independent of AC-main telemetry.
         if daily_energy:
             merged["daily_energy"] = daily_energy
+        else:
+            merged.pop("daily_energy", None)
 
         # AC output control responses are cached in _mqtt_live_values by
         # _ingest_mqtt_control_values. Publish both the state consumed by the
@@ -2683,6 +2747,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if mqtt_live:
             merged["mqtt_live"] = mqtt_live
+        else:
+            merged.pop("mqtt_live", None)
         return merged
 
     async def _async_api_call(

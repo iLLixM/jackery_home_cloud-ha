@@ -21,7 +21,11 @@ from freezegun import freeze_time
 import pytest
 
 from custom_components.jackery_home_cloud.coordinator import (
+    _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS,
+    _MQTT_FRESHNESS_GATED_ENERGY_KEYS,
+    _MQTT_FRESHNESS_GATED_POWER_KEYS,
     JackeryHomeCloudCoordinator,
+    JackeryMqttSystem,
 )
 from custom_components.jackery_home_cloud.const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
@@ -30,6 +34,30 @@ from custom_components.jackery_home_cloud.const import (
 from homeassistant.util import dt as dt_util
 
 SYSTEM_ID = "sys1"
+
+EXPECTED_FRESHNESS_GATED_ENERGY_KEYS = {
+    "battery_energy_charged_total",
+    "battery_energy_discharged_total",
+    "ac_output_energy_in",
+    "ac_output_energy_out",
+    "pv1_energy_total",
+    "pv2_energy_total",
+    "pv_energy_total",
+}
+EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
+    "battery_soc_mqtt",
+    "pv_power_mqtt",
+    "battery_power_mqtt",
+    "battery_power_bms1_mqtt",
+    "other_load_power_mqtt",
+    "grid_power_mqtt",
+    "eps_load_power_mqtt",
+    "ac_main_power_mqtt",
+}
+EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS = {
+    "battery_energy_charged_today",
+    "battery_energy_discharged_today",
+}
 
 
 def _make_coordinator(live_values: dict) -> JackeryHomeCloudCoordinator:
@@ -150,6 +178,238 @@ class TestExistingMqttBundleValuesRemainMerged:
             "source": "mqtt_data_set",
             "age_seconds": 0.0,
         }
+
+
+class TestExpiredMqttOverlaysAreRemoved:
+    """Exercise repeated merges of an already MQTT-enriched bundle.
+
+    A simple merge into an empty REST bundle cannot reproduce the runtime
+    failure: `_publish_runtime_update` starts from `self.data`, which may still
+    contain values and metadata written by an earlier merge. Every sampled
+    MQTT overlay must therefore be cleared before freshness is evaluated.
+    """
+
+    def test_freshness_key_sets_cover_every_current_sampled_overlay(self):
+        """Make additions to the production cleanup lists an explicit choice."""
+        assert (
+            _MQTT_FRESHNESS_GATED_ENERGY_KEYS
+            == EXPECTED_FRESHNESS_GATED_ENERGY_KEYS
+        )
+        assert (
+            _MQTT_FRESHNESS_GATED_POWER_KEYS
+            == EXPECTED_FRESHNESS_GATED_POWER_KEYS
+        )
+        assert (
+            _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS
+            == EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS
+        )
+
+    @pytest.mark.parametrize("key", sorted(EXPECTED_FRESHNESS_GATED_ENERGY_KEYS))
+    @freeze_time("2026-01-01 12:00:00")
+    def test_expired_energy_overlay_and_metadata_are_removed(self, key):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                key: 42.0,
+                f"{key}_at": now - timedelta(seconds=901),
+                # Settings are deliberately not freshness-gated and provide
+                # a guard against clearing the whole mqtt_live structure.
+                "work_mode_raw": "02",
+            }
+        )
+        bundle = {
+            key: 42.0,
+            "work_mode_raw": "02",
+            "mqtt_live": {
+                key: {"value": 42.0, "source": "mqtt", "age_seconds": 0.0},
+                "work_mode_raw": {"value": "02", "source": "mqtt"},
+            },
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        assert key not in merged
+        assert key not in merged["mqtt_live"]
+        assert merged["work_mode_raw"] == "02"
+        assert merged["mqtt_live"]["work_mode_raw"]["value"] == "02"
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_fresh_value_is_reapplied_after_previous_overlay_is_cleared(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                "ac_output_energy_in": 12.75,
+                "ac_output_energy_in_at": now,
+            }
+        )
+        bundle = {
+            "ac_output_energy_in": 12.5,
+            "mqtt_live": {
+                "ac_output_energy_in": {
+                    "value": 12.5,
+                    "source": "mqtt",
+                    "age_seconds": 300.0,
+                }
+            },
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        assert merged["ac_output_energy_in"] == 12.75
+        assert merged["mqtt_live"]["ac_output_energy_in"] == {
+            "value": 12.75,
+            "source": "mqtt",
+            "age_seconds": 0.0,
+        }
+
+    @pytest.mark.parametrize("key", sorted(EXPECTED_FRESHNESS_GATED_POWER_KEYS))
+    @freeze_time("2026-01-01 12:00:00")
+    def test_expired_power_overlay_and_metadata_are_removed(self, key):
+        now = dt_util.utcnow()
+        stale_timestamp = now - timedelta(seconds=121)
+        if key == "pv_power_mqtt":
+            live = {
+                "pv1_power_mqtt": 20.0,
+                "pv1_power_mqtt_at": stale_timestamp,
+                "pv2_power_mqtt": 22.0,
+                "pv2_power_mqtt_at": stale_timestamp,
+            }
+        else:
+            live = {key: 42.0, f"{key}_at": stale_timestamp}
+        live["work_mode_raw"] = "02"
+        coordinator = _make_coordinator(live)
+        bundle = {
+            key: 42.0,
+            "work_mode_raw": "02",
+            "mqtt_live": {
+                key: {"value": 42.0, "source": "mqtt"},
+                "work_mode_raw": {"value": "02", "source": "mqtt"},
+            },
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        assert key not in merged
+        assert key not in merged["mqtt_live"]
+        assert merged["work_mode_raw"] == "02"
+        assert merged["mqtt_live"]["work_mode_raw"]["value"] == "02"
+
+    @pytest.mark.parametrize(
+        "key",
+        sorted(EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_expired_daily_energy_overlay_and_metadata_are_removed(self, key):
+        now = dt_util.utcnow()
+        day_key = "20260101"
+        coordinator = _make_coordinator(
+            {
+                key: 4.2,
+                f"{key}_at": now - timedelta(seconds=901),
+                f"{key}_day_key": day_key,
+            }
+        )
+        bundle = {
+            "trend_day_key": day_key,
+            "daily_energy": {
+                "solar_energy_generated_today": 8.0,
+                key: 4.2,
+            },
+            "mqtt_live": {
+                key: {
+                    "value": 4.2,
+                    "source": "mqtt",
+                    "day_key": day_key,
+                    "age_seconds": 0.0,
+                }
+            },
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        assert key not in merged["daily_energy"]
+        assert merged["daily_energy"]["solar_energy_generated_today"] == 8.0
+        assert "mqtt_live" not in merged
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_clean_rest_daily_value_survives_stale_mqtt_cache(self):
+        now = dt_util.utcnow()
+        day_key = "20260101"
+        coordinator = _make_coordinator(
+            {
+                "battery_energy_charged_today": 4.2,
+                "battery_energy_charged_today_at": now - timedelta(seconds=901),
+                "battery_energy_charged_today_day_key": day_key,
+            }
+        )
+        bundle = {
+            "trend_day_key": day_key,
+            "daily_energy": {"battery_energy_charged_today": 3.5},
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        # Without prior mqtt_live provenance this is a REST/trend value, not
+        # an old overlay, and must remain available as the fallback.
+        assert merged["daily_energy"]["battery_energy_charged_today"] == 3.5
+        assert "mqtt_live" not in merged
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_runtime_update_removes_expired_overlays_across_value_groups(self):
+        now = dt_util.utcnow()
+        stale_energy_timestamp = now - timedelta(seconds=901)
+        stale_power_timestamp = now - timedelta(seconds=121)
+        coordinator = _make_coordinator(
+            {
+                "ac_output_energy_in": 12.5,
+                "ac_output_energy_in_at": stale_energy_timestamp,
+                "grid_power_mqtt": 250.0,
+                "grid_power_mqtt_at": stale_power_timestamp,
+                "battery_energy_charged_today": 4.2,
+                "battery_energy_charged_today_at": stale_energy_timestamp,
+                "battery_energy_charged_today_day_key": "20260101",
+                "work_mode_raw": "02",
+            }
+        )
+        coordinator.mqtt_system = JackeryMqttSystem(
+            system_id=SYSTEM_ID,
+            device_serial="SN1",
+        )
+        coordinator._mqtt_state = {"connected": True}
+        coordinator.data = {
+            "systems": {
+                SYSTEM_ID: {
+                    "system": {"systemNo": "SN1"},
+                    "trend_day_key": "20260101",
+                    "ac_output_energy_in": 12.5,
+                    "grid_power_mqtt": 250.0,
+                    "work_mode_raw": "02",
+                    "daily_energy": {
+                        "solar_energy_generated_today": 8.0,
+                        "battery_energy_charged_today": 4.2,
+                    },
+                    "mqtt_live": {
+                        "ac_output_energy_in": {"source": "mqtt"},
+                        "grid_power_mqtt": {"source": "mqtt"},
+                        "battery_energy_charged_today": {"source": "mqtt"},
+                        "work_mode_raw": {"source": "mqtt"},
+                    },
+                }
+            }
+        }
+        listener_calls = []
+        coordinator.async_update_listeners = lambda: listener_calls.append(True)
+
+        coordinator._publish_runtime_update()
+
+        merged = coordinator.data["systems"][SYSTEM_ID]
+        assert "ac_output_energy_in" not in merged
+        assert "grid_power_mqtt" not in merged
+        assert "battery_energy_charged_today" not in merged["daily_energy"]
+        assert merged["daily_energy"]["solar_energy_generated_today"] == 8.0
+        assert merged["work_mode_raw"] == "02"
+        assert set(merged["mqtt_live"]) == {"work_mode_raw"}
+        assert listener_calls == [True]
 
 
 class TestAcMainPowerSignDerivation:
