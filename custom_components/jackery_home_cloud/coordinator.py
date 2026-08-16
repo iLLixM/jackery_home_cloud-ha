@@ -1487,8 +1487,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
         # The following are fluctuating instantaneous values (not cumulative
-        # totals), so no decrease-tolerance guard applies. Meter mappings are
-        # unverified candidates pending comparison against the Jackery app.
+        # totals), so no decrease-tolerance guard applies.
         if battery_soc_raw is not None:
             updated.update(
                 {
@@ -1497,7 +1496,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT battery SOC (unverified mapping) for %s from meter %s: raw=%s -> %.1f%%",
+                "Accepted MQTT battery SOC for %s from meter %s: raw=%s -> %.1f%%",
                 system_id,
                 MQTT_EMS_BATTERY_SOC_METER_ID,
                 battery_soc_raw,
@@ -1529,7 +1528,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT PV1 power (unverified mapping) for %s from meter %s: %s W",
+                "Accepted MQTT PV1 power for %s from meter %s: %s W",
                 system_id,
                 MQTT_PCS_PV1_POWER_METER_ID,
                 pv1_power,
@@ -1543,7 +1542,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT PV2 power (unverified mapping) for %s from meter %s: %s W",
+                "Accepted MQTT PV2 power for %s from meter %s: %s W",
                 system_id,
                 MQTT_PCS_PV2_POWER_METER_ID,
                 pv2_power,
