@@ -16,7 +16,9 @@ item 6, "Event-driven write verification") - no `hass` needed. Built via
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import logging
+from unittest.mock import patch
 
 from freezegun import freeze_time
 import pytest
@@ -24,11 +26,16 @@ import pytest
 from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
     MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
+    MQTT_EMS_BATTERY_POWER_METER_ID,
     MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID,
     MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID,
     MQTT_EMS_CHARGE_WINDOW_METER_IDS,
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
+    MQTT_EMS_EPS_LOAD_POWER_METER_ID,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
+    MQTT_PCS_AC_MAIN_POWER_METER_ID,
+    MQTT_PCS_PV1_POWER_METER_ID,
+    MQTT_PCS_PV2_POWER_METER_ID,
 )
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
@@ -81,9 +88,73 @@ def _data_report(gw_sn: str, meter_list: list[list[str]]) -> dict:
     }
 
 
+def _power_data_report(gw_sn: str) -> dict:
+    """Build one report containing every AC-main sign input."""
+    return {
+        "payload_json": {
+            "cmd": "data_report",
+            "gw_sn": gw_sn,
+            "info": {
+                "dev_list": [
+                    {
+                        "dev_sn": f"ems_{gw_sn}",
+                        "meter_list": [
+                            [MQTT_EMS_BATTERY_POWER_METER_ID, "-234"],
+                            [MQTT_EMS_EPS_LOAD_POWER_METER_ID, "-632"],
+                        ],
+                    },
+                    {
+                        "dev_sn": f"pcs_{gw_sn}",
+                        "meter_list": [
+                            [MQTT_PCS_PV1_POWER_METER_ID, "0"],
+                            [MQTT_PCS_PV2_POWER_METER_ID, "0"],
+                            [MQTT_PCS_AC_MAIN_POWER_METER_ID, "363"],
+                        ],
+                    },
+                ]
+            },
+        }
+    }
+
+
 def test_ac_output_energy_meters_are_in_slow_totals_poll_group():
     assert MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID in _TOTALS_EMS_METER_IDS
     assert MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID in _TOTALS_EMS_METER_IDS
+
+
+class TestMqttReportTimestampCoherence:
+    def test_all_values_from_one_report_share_one_reception_timestamp(self):
+        """Clock movement while parsing must not split one observation batch.
+
+        The deliberately advancing clock would assign different timestamps if
+        ingestion called ``utcnow`` once per meter. A single report must remain
+        coherent so its values can safely contribute to AC-main sign inference.
+        """
+        coordinator = _make_coordinator()
+        message = _power_data_report(PRIMARY_SERIAL)
+        first_instant = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+        instants = iter(
+            first_instant + timedelta(seconds=index) for index in range(50)
+        )
+
+        with patch(
+            "custom_components.jackery_home_cloud.coordinator.dt_util.utcnow",
+            side_effect=lambda: next(instants),
+        ):
+            coordinator._ingest_mqtt_live_values(message)
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        timestamps = {
+            live[f"{key}_at"]
+            for key in (
+                "battery_power_mqtt",
+                "eps_load_power_mqtt",
+                "pv1_power_mqtt",
+                "pv2_power_mqtt",
+                "ac_main_power_mqtt",
+            )
+        }
+        assert timestamps == {first_instant}
 
 
 class TestSecondarySystemIgnored:

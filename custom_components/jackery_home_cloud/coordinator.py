@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from .api.client import JackeryApiClient
 from .const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
+    AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
     CONF_ACCOUNT,
     CONF_MQTT_SYSTEM_ID,
     CONF_MQTT_SYSTEM_SELECTION_PENDING,
@@ -1134,6 +1135,12 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return
 
+        # Use one reception timestamp for every value carried by this MQTT
+        # message. Besides accurately representing one observation batch,
+        # this lets the AC-main sign logic distinguish contemporaneous values
+        # from independently cached samples that only happen to be "fresh".
+        received_at = dt_util.utcnow()
+
         battery_charged_total = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1267,6 +1274,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_ids=MQTT_EMS_CHARGE_WINDOW_METER_IDS,
             key_prefix="charge_window_",
             label="charge",
+            received_at=received_at,
         )
         discharge_window_updates = _ingest_schedule_window_updates(
             payload,
@@ -1275,6 +1283,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_ids=MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
             key_prefix="discharge_window_",
             label="discharge",
+            received_at=received_at,
         )
         if (
             battery_charged_total is None
@@ -1327,7 +1336,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "ac_output_energy_in": ac_output_energy_in,
-                        "ac_output_energy_in_at": dt_util.utcnow(),
+                        "ac_output_energy_in_at": received_at,
                         "ac_output_energy_in_source": "mqtt",
                     }
                 )
@@ -1356,7 +1365,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "ac_output_energy_out": ac_output_energy_out,
-                        "ac_output_energy_out_at": dt_util.utcnow(),
+                        "ac_output_energy_out_at": received_at,
                         "ac_output_energy_out_source": "mqtt",
                     }
                 )
@@ -1380,7 +1389,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "battery_energy_charged_total": battery_charged_total,
-                        "battery_energy_charged_total_at": dt_util.utcnow(),
+                        "battery_energy_charged_total_at": received_at,
                         "battery_energy_charged_total_source": "mqtt",
                     }
                 )
@@ -1404,7 +1413,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "battery_energy_discharged_total": battery_discharged_total,
-                        "battery_energy_discharged_total_at": dt_util.utcnow(),
+                        "battery_energy_discharged_total_at": received_at,
                         "battery_energy_discharged_total_source": "mqtt",
                     }
                 )
@@ -1428,7 +1437,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "pv1_energy_total": pv1_energy_total,
-                        "pv1_energy_total_at": dt_util.utcnow(),
+                        "pv1_energy_total_at": received_at,
                         "pv1_energy_total_source": "mqtt",
                     }
                 )
@@ -1452,7 +1461,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "pv2_energy_total": pv2_energy_total,
-                        "pv2_energy_total_at": dt_util.utcnow(),
+                        "pv2_energy_total_at": received_at,
                         "pv2_energy_total_source": "mqtt",
                     }
                 )
@@ -1476,7 +1485,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 updated.update(
                     {
                         "pv_energy_total": pv_energy_total,
-                        "pv_energy_total_at": dt_util.utcnow(),
+                        "pv_energy_total_at": received_at,
                         "pv_energy_total_source": "mqtt",
                     }
                 )
@@ -1493,7 +1502,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "battery_soc_mqtt": battery_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
-                    "battery_soc_mqtt_at": dt_util.utcnow(),
+                    "battery_soc_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1508,7 +1517,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "battery_power_mqtt": battery_power_ems,
-                    "battery_power_mqtt_at": dt_util.utcnow(),
+                    "battery_power_mqtt_at": received_at,
                 }
             )
 
@@ -1525,7 +1534,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "pv1_power_mqtt": pv1_power,
-                    "pv1_power_mqtt_at": dt_util.utcnow(),
+                    "pv1_power_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1539,7 +1548,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "pv2_power_mqtt": pv2_power,
-                    "pv2_power_mqtt_at": dt_util.utcnow(),
+                    "pv2_power_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1553,7 +1562,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "work_mode_raw": str(int(work_mode_raw)),
-                    "work_mode_raw_at": dt_util.utcnow(),
+                    "work_mode_raw_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1567,7 +1576,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "ac_main_power_mqtt": ac_main_power_magnitude,
-                    "ac_main_power_mqtt_at": dt_util.utcnow(),
+                    "ac_main_power_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1581,7 +1590,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "battery_power_bms1_mqtt": battery_power_bms1,
-                    "battery_power_bms1_mqtt_at": dt_util.utcnow(),
+                    "battery_power_bms1_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1595,7 +1604,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "other_load_power_mqtt": other_load_power,
-                    "other_load_power_mqtt_at": dt_util.utcnow(),
+                    "other_load_power_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1610,7 +1619,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "grid_power_mqtt": grid_power,
-                    "grid_power_mqtt_at": dt_util.utcnow(),
+                    "grid_power_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1625,7 +1634,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "eps_load_power_mqtt": eps_load_power,
-                    "eps_load_power_mqtt_at": dt_util.utcnow(),
+                    "eps_load_power_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1641,7 +1650,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "discharge_limit_soc_mqtt": discharge_limit_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
-                    "discharge_limit_soc_mqtt_at": dt_util.utcnow(),
+                    "discharge_limit_soc_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1656,7 +1665,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "charge_limit_soc_mqtt": charge_limit_soc_raw / MQTT_EMS_BATTERY_SOC_SCALE,
-                    "charge_limit_soc_mqtt_at": dt_util.utcnow(),
+                    "charge_limit_soc_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1671,7 +1680,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "feed_power_limit_mqtt": feed_power_limit,
-                    "feed_power_limit_mqtt_at": dt_util.utcnow(),
+                    "feed_power_limit_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1685,7 +1694,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "standby_raw": str(int(standby_raw)),
-                    "standby_raw_at": dt_util.utcnow(),
+                    "standby_raw_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1699,7 +1708,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "output_power_limit_raw": str(int(output_power_limit_raw)),
-                    "output_power_limit_raw_at": dt_util.utcnow(),
+                    "output_power_limit_raw_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -1713,7 +1722,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             updated.update(
                 {
                     "auto_standby_raw": str(int(auto_standby_raw)),
-                    "auto_standby_raw_at": dt_util.utcnow(),
+                    "auto_standby_raw_at": received_at,
                 }
             )
             _LOGGER.debug(
@@ -2273,20 +2282,44 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             battery_power_signed = merged.get("battery_power_mqtt")
             eps_load_power_signed = merged.get("eps_load_power_mqtt")
 
+            # General freshness controls whether a power value is published as
+            # a sensor. Sign reconstruction is stricter: every input must also
+            # describe approximately the same physical instant as AC Main.
+            # Otherwise a still-fresh cached value from an earlier poll cycle
+            # could reverse the inferred direction during a load transition.
+            battery_power_skew_seconds = _sample_skew_seconds(
+                ac_main_timestamp,
+                live.get("battery_power_mqtt_at"),
+            )
+            eps_load_power_skew_seconds = _sample_skew_seconds(
+                ac_main_timestamp,
+                live.get("eps_load_power_mqtt_at"),
+            )
+            pv1_power_skew_seconds = _sample_skew_seconds(
+                ac_main_timestamp,
+                pv1_power_timestamp,
+            )
+            pv2_power_skew_seconds = _sample_skew_seconds(
+                ac_main_timestamp,
+                pv2_power_timestamp,
+            )
+
             battery_power_available = isinstance(
                 battery_power_signed,
                 (int, float),
-            )
+            ) and _sample_is_contemporaneous(battery_power_skew_seconds)
             eps_load_power_available = isinstance(
                 eps_load_power_signed,
                 (int, float),
-            )
+            ) and _sample_is_contemporaneous(eps_load_power_skew_seconds)
 
             pv_power_complete = (
                 pv1_power_fresh
                 and pv2_power_fresh
                 and pv1_power_value is not None
                 and pv2_power_value is not None
+                and _sample_is_contemporaneous(pv1_power_skew_seconds)
+                and _sample_is_contemporaneous(pv2_power_skew_seconds)
             )
 
             # The MQTT meter provides the AC Main magnitude.
@@ -2303,20 +2336,26 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug(
                 "AC main sign evaluation for system %s: "
                 "magnitude=%s, "
-                "pv1=%s (fresh=%s), "
-                "pv2=%s (fresh=%s), "
-                "battery=%s (available=%s), "
-                "eps=%s (available=%s)",
+                "pv1=%s (fresh=%s, skew=%s), "
+                "pv2=%s (fresh=%s, skew=%s), "
+                "battery=%s (available=%s, skew=%s), "
+                "eps=%s (available=%s, skew=%s), "
+                "max_skew=%s",
                 system_id,
                 ac_main_magnitude_abs,
                 pv1_power_value,
                 pv1_power_fresh,
+                pv1_power_skew_seconds,
                 pv2_power_value,
                 pv2_power_fresh,
+                pv2_power_skew_seconds,
                 battery_power_signed,
                 battery_power_available,
+                battery_power_skew_seconds,
                 eps_load_power_signed,
                 eps_load_power_available,
+                eps_load_power_skew_seconds,
+                AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
             )
 
             # ------------------------------------------------------------------
@@ -2581,6 +2620,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "balance_delta": balance_delta,
                 "sign_indicator": sign_indicator,
                 "sign_source": sign_source,
+                "sample_max_skew_seconds": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+                "sample_skew_seconds": {
+                    "pv1": pv1_power_skew_seconds,
+                    "pv2": pv2_power_skew_seconds,
+                    "battery": battery_power_skew_seconds,
+                    "eps": eps_load_power_skew_seconds,
+                },
             }
 
         else:
@@ -3109,6 +3155,21 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _sample_skew_seconds(reference: Any, candidate: Any) -> float | None:
+    """Return the absolute timestamp distance between two MQTT samples."""
+    if not isinstance(reference, datetime) or not isinstance(candidate, datetime):
+        return None
+    return abs((candidate - reference).total_seconds())
+
+
+def _sample_is_contemporaneous(skew_seconds: float | None) -> bool:
+    """Return whether a sample may contribute to AC-main sign inference."""
+    return (
+        skew_seconds is not None
+        and skew_seconds <= AC_MAIN_SAMPLE_MAX_SKEW_SECONDS
+    )
+
+
 def _validate_and_pad_schedule_raw(raw: str) -> str | None:
     """Validate and zero-pad an EMS schedule window raw value.
 
@@ -3150,6 +3211,7 @@ def _ingest_schedule_window_updates(
     meter_ids: tuple[str, ...],
     key_prefix: str,
     label: str,
+    received_at: datetime,
 ) -> dict[str, Any]:
     """Extract and validate one schedule-window meter group (charge or
     discharge) from an MQTT payload. Shared by both groups in
@@ -3174,5 +3236,5 @@ def _ingest_schedule_window_updates(
             )
             continue
         updates[f"{key_prefix}{index}"] = validated
-        updates[f"{key_prefix}{index}_at"] = dt_util.utcnow()
+        updates[f"{key_prefix}{index}_at"] = received_at
     return updates

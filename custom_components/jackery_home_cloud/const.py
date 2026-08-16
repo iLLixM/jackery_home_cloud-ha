@@ -137,6 +137,12 @@ MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
 # This is a heuristic threshold, not a confirmed protocol constant.
 AC_MAIN_IDLE_POWER_THRESHOLD_W: float = 50.0
 
+# Maximum timestamp spread for power samples combined to reconstruct the
+# AC-main direction. This is deliberately shorter than the minimum 5-second
+# fast-poll interval so values from adjacent poll cycles are not balanced as
+# though they described the same physical state.
+AC_MAIN_SAMPLE_MAX_SKEW_SECONDS: float = 2.0
+
 # Instantaneous system battery charge/discharge power reported by the EMS.
 # This value is expected to represent the combined battery power of the
 # complete system, including additional battery packs.

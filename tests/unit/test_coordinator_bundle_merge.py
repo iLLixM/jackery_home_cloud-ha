@@ -23,7 +23,10 @@ import pytest
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
 )
-from custom_components.jackery_home_cloud.const import AC_MAIN_IDLE_POWER_THRESHOLD_W
+from custom_components.jackery_home_cloud.const import (
+    AC_MAIN_IDLE_POWER_THRESHOLD_W,
+    AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+)
 from homeassistant.util import dt as dt_util
 
 SYSTEM_ID = "sys1"
@@ -45,8 +48,10 @@ def _ac_main_live_values(
     battery: float | None = None,
     eps: float | None = None,
     stale: frozenset[str] = frozenset(),
+    skew_seconds: dict[str, float] | None = None,
 ) -> dict:
-    """Build timestamped AC-main inputs, optionally making sources stale."""
+    """Build timestamped AC-main inputs with optional age/skew overrides."""
+    skew_seconds = skew_seconds or {}
     values = {
         "ac_main_power_mqtt": ac_main,
         "ac_main_power_mqtt_at": now,
@@ -61,9 +66,8 @@ def _ac_main_live_values(
         if value is None:
             continue
         values[key] = value
-        values[f"{key}_at"] = (
-            now - timedelta(seconds=121) if key in stale else now
-        )
+        sample_skew = 121 if key in stale else skew_seconds.get(key, 0)
+        values[f"{key}_at"] = now - timedelta(seconds=sample_skew)
     return values
 
 
@@ -240,7 +244,9 @@ class TestAcMainPowerSignDerivation:
         boundary_timestamp = now - timedelta(seconds=120)
         live = {
             "battery_power_mqtt": 100.0,
-            "battery_power_mqtt_at": now,
+            # Both values belong to the same report, so this test isolates
+            # the general freshness boundary from sample-coherence gating.
+            "battery_power_mqtt_at": boundary_timestamp,
             "ac_main_power_mqtt": 42.0,
             "ac_main_power_mqtt_at": boundary_timestamp,
         }
@@ -250,22 +256,14 @@ class TestAcMainPowerSignDerivation:
 
     @freeze_time("2026-01-01 12:00:00")
     def test_battery_power_freshness_boundary_still_flips_sign(self):
-        """battery_power_mqtt's own freshness gate (evaluated in the
-        general power-value loop, separate from ac_main's own gate) is
-        exactly at its boundary here, not stale - the general freshness
-        loop's `<=` comparison (same as ac_main's own, see
-        test_ac_main_freshness_boundary_is_inclusive) must still merge it
-        into `merged`, so the sign-derivation step immediately after can
-        still read it and flip ac_main's sign, rather than silently falling
-        back to unsigned because it looked for staleness in the wrong
-        place."""
+        """A coherent battery sample remains usable at the age boundary."""
         now = dt_util.utcnow()
         boundary_timestamp = now - timedelta(seconds=120)
         live = {
             "battery_power_mqtt": 1390.0,
             "battery_power_mqtt_at": boundary_timestamp,
             "ac_main_power_mqtt": 1469.0,
-            "ac_main_power_mqtt_at": now,
+            "ac_main_power_mqtt_at": boundary_timestamp,
         }
         coordinator = _make_coordinator(live)
         merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
@@ -486,6 +484,7 @@ class TestAcMainPowerDecisionMatrix:
             battery=inputs.get("battery"),
             eps=inputs.get("eps"),
             stale=inputs.get("stale", frozenset()),
+            skew_seconds=inputs.get("skew_seconds"),
         )
         coordinator = _make_coordinator(live)
 
@@ -496,6 +495,25 @@ class TestAcMainPowerDecisionMatrix:
         # raw meter's magnitude, even if their numerical difference is large.
         assert abs(merged["ac_main_power_mqtt"]) == abs(raw_magnitude)
         metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        stale = inputs.get("stale", frozenset())
+        skew_overrides = inputs.get("skew_seconds", {})
+        sample_skew_seconds = {
+            name: (
+                None
+                if inputs.get(input_name) is None
+                else (
+                    121.0
+                    if live_key in stale
+                    else float(skew_overrides.get(live_key, 0.0))
+                )
+            )
+            for name, input_name, live_key in (
+                ("pv1", "pv1", "pv1_power_mqtt"),
+                ("pv2", "pv2", "pv2_power_mqtt"),
+                ("battery", "battery", "battery_power_mqtt"),
+                ("eps", "eps", "eps_load_power_mqtt"),
+            )
+        }
         assert metadata == {
             "value": expected_value,
             "source": "mqtt",
@@ -504,7 +522,117 @@ class TestAcMainPowerDecisionMatrix:
             "balance_delta": expected_delta,
             "sign_indicator": expected_indicator,
             "sign_source": expected_source,
+            "sample_max_skew_seconds": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+            "sample_skew_seconds": sample_skew_seconds,
         }
+
+
+class TestAcMainPowerSampleCoherence:
+    """Prevent valid-but-older values from deciding a newer AC-main sign."""
+
+    @pytest.mark.parametrize(
+        ("skew_seconds", "expected_source"),
+        (
+            pytest.param(
+                AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+                "pv_battery_eps_balance_positive",
+                id="maximum-skew-is-inclusive",
+            ),
+            pytest.param(
+                AC_MAIN_SAMPLE_MAX_SKEW_SECONDS + 0.001,
+                "pv_battery_fallback_negative",
+                id="eps-just-outside-maximum-skew-is-excluded",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_eps_skew_boundary_changes_the_selected_cohort(
+        self,
+        skew_seconds,
+        expected_source,
+    ):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=363.0,
+                pv1=0.0,
+                pv2=0.0,
+                battery=234.0,
+                eps=-632.0,
+                skew_seconds={"eps_load_power_mqtt": skew_seconds},
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        # EPS remains fresh enough to publish, but only a contemporaneous
+        # value may participate in AC-main direction reconstruction.
+        assert merged["eps_load_power_mqtt"] == -632.0
+        assert merged["ac_main_power_mqtt"] == (
+            363.0
+            if skew_seconds <= AC_MAIN_SAMPLE_MAX_SKEW_SECONDS
+            else -363.0
+        )
+        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        assert metadata["sign_source"] == expected_source
+        assert metadata["sample_skew_seconds"]["eps"] == skew_seconds
+        assert (
+            metadata["sample_max_skew_seconds"]
+            == AC_MAIN_SAMPLE_MAX_SKEW_SECONDS
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_incoherent_pv_uses_contemporaneous_battery_eps_fallback(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=120.0,
+                pv1=500.0,
+                pv2=500.0,
+                battery=-100.0,
+                eps=20.0,
+                skew_seconds={
+                    "pv2_power_mqtt": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS + 0.001
+                },
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        # The still-fresh PV pair remains available to the combined PV sensor
+        # even though its skew excludes it from this sign decision.
+        assert merged["pv_power_mqtt"] == 1000.0
+        assert merged["ac_main_power_mqtt"] == 120.0
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "battery_eps_minimum_balance_positive"
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_incoherent_battery_leaves_ac_main_unsigned(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=-363.0,
+                battery=234.0,
+                skew_seconds={
+                    "battery_power_mqtt": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS
+                    + 0.001
+                },
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["battery_power_mqtt"] == 234.0
+        assert merged["ac_main_power_mqtt"] == 363.0
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "unsigned_fallback"
+        )
 
 
 class TestPowerValueFreshnessGating:
