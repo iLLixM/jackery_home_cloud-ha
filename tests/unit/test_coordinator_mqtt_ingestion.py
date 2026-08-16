@@ -3,6 +3,8 @@
 
   "Multi-system safeguard" section: secondary MQTT payloads are ignored.
   "Parser behavior" section: raw schedule values, missing leading zeros.
+  "Energy pipeline" section: AC-output totals pass from one MQTT report
+  through ingestion and bundle merging to their final sensor values.
 
 `_ingest_mqtt_live_values` only reads `self.data` (for
 `_resolve_system_id_from_gw_sn`) and `self.mqtt_system` (via
@@ -15,6 +17,8 @@ item 6, "Event-driven write verification") - no `hass` needed. Built via
 from __future__ import annotations
 
 import logging
+
+from freezegun import freeze_time
 
 from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
@@ -31,7 +35,11 @@ from custom_components.jackery_home_cloud.coordinator import (
     _TOTALS_EMS_METER_IDS,
     _validate_and_pad_schedule_raw,
 )
-from custom_components.jackery_home_cloud.sensor import _schedule_windows
+from custom_components.jackery_home_cloud.sensor import (
+    SYSTEM_SENSOR_DESCRIPTIONS,
+    JackeryMetricSensor,
+    _schedule_windows,
+)
 
 PRIMARY_SYSTEM = "sys-primary"
 PRIMARY_SERIAL = "SN-PRIMARY"
@@ -423,3 +431,64 @@ class TestCumulativeEnergyTotalsRejectDecreases:
         coordinator._ingest_mqtt_live_values(message)
 
         assert coordinator._mqtt_live_values[PRIMARY_SYSTEM]["pv1_energy_total"] == 5.0
+
+
+class TestAcOutputEnergyPipeline:
+    """Exercise the complete MQTT-report-to-sensor data path.
+
+    The focused tests above intentionally isolate ingestion. This regression
+    test connects all production stages so a mismatch between meter IDs,
+    live-cache keys, bundle keys, metadata, or sensor value callbacks cannot
+    pass unnoticed.
+    """
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_single_report_reaches_both_energy_sensor_values(self):
+        coordinator = _make_coordinator()
+        message = _data_report(
+            PRIMARY_SERIAL,
+            [
+                [MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID, "4.125"],
+                [MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID, "7.875"],
+            ],
+        )
+
+        # Stage 1: parse the actual MQTT report and populate the live cache.
+        coordinator._ingest_mqtt_live_values(message)
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live["ac_output_energy_in"] == 4.125
+        assert live["ac_output_energy_out"] == 7.875
+
+        # Stage 2: merge fresh cached values into the coordinator bundle.
+        source_bundle = coordinator.data["systems"][PRIMARY_SYSTEM]
+        merged = coordinator._apply_mqtt_live_values_to_bundle(
+            PRIMARY_SYSTEM,
+            source_bundle,
+        )
+        coordinator.data["systems"][PRIMARY_SYSTEM] = merged
+
+        expected_values = {
+            "ac_output_energy_in": 4.125,
+            "ac_output_energy_out": 7.875,
+        }
+        for key, expected_value in expected_values.items():
+            assert merged[key] == expected_value
+            assert merged["mqtt_live"][key] == {
+                "value": expected_value,
+                "source": "mqtt",
+                "age_seconds": 0.0,
+            }
+
+        # Stage 3: expose the merged values through the shipped sensor
+        # descriptions and JackeryMetricSensor.native_value property.
+        descriptions = {
+            description.key: description
+            for description in SYSTEM_SENSOR_DESCRIPTIONS
+        }
+        for key, expected_value in expected_values.items():
+            sensor = JackeryMetricSensor(
+                coordinator=coordinator,
+                system_id=PRIMARY_SYSTEM,
+                description=descriptions[key],
+            )
+            assert sensor.native_value == expected_value
