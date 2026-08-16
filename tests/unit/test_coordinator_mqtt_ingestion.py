@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 
 from freezegun import freeze_time
+import pytest
 
 from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
@@ -32,6 +33,7 @@ from custom_components.jackery_home_cloud.const import (
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
     JackeryMqttSystem,
+    _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH,
     _TOTALS_EMS_METER_IDS,
     _validate_and_pad_schedule_raw,
 )
@@ -45,6 +47,10 @@ PRIMARY_SYSTEM = "sys-primary"
 PRIMARY_SERIAL = "SN-PRIMARY"
 SECONDARY_SYSTEM = "sys-secondary"
 SECONDARY_SERIAL = "SN-SECONDARY"
+AC_OUTPUT_ENERGY_METERS = (
+    ("ac_output_energy_in", MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID),
+    ("ac_output_energy_out", MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID),
+)
 
 
 def _make_coordinator() -> JackeryHomeCloudCoordinator:
@@ -431,6 +437,90 @@ class TestCumulativeEnergyTotalsRejectDecreases:
         coordinator._ingest_mqtt_live_values(message)
 
         assert coordinator._mqtt_live_values[PRIMARY_SYSTEM]["pv1_energy_total"] == 5.0
+
+
+class TestAcOutputEnergyToleranceBoundaries:
+    """Pin the monotonicity guard at and immediately beyond its boundary."""
+
+    @pytest.mark.parametrize(("key", "meter_id"), AC_OUTPUT_ENERGY_METERS)
+    def test_decrease_exactly_at_tolerance_is_accepted(self, key, meter_id):
+        coordinator = _make_coordinator()
+        previous_value = 10.0
+        previous_timestamp = "previous-timestamp"
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {
+            key: previous_value,
+            f"{key}_at": previous_timestamp,
+        }
+        incoming_value = (
+            previous_value - _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH
+        )
+
+        coordinator._ingest_mqtt_live_values(
+            _data_report(PRIMARY_SERIAL, [[meter_id, str(incoming_value)]])
+        )
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live[key] == pytest.approx(incoming_value)
+        assert live[f"{key}_at"] != previous_timestamp
+        assert live[f"{key}_source"] == "mqtt"
+
+    @pytest.mark.parametrize(("key", "meter_id"), AC_OUTPUT_ENERGY_METERS)
+    def test_decrease_just_beyond_tolerance_preserves_value_and_timestamp(
+        self,
+        key,
+        meter_id,
+    ):
+        coordinator = _make_coordinator()
+        previous_value = 10.0
+        previous_timestamp = "previous-timestamp"
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {
+            key: previous_value,
+            f"{key}_at": previous_timestamp,
+            f"{key}_source": "previous-source",
+        }
+        incoming_value = (
+            previous_value
+            - _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH
+            - 0.001
+        )
+
+        coordinator._ingest_mqtt_live_values(
+            _data_report(PRIMARY_SERIAL, [[meter_id, str(incoming_value)]])
+        )
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live[key] == previous_value
+        assert live[f"{key}_at"] == previous_timestamp
+        assert live[f"{key}_source"] == "previous-source"
+
+    @pytest.mark.parametrize(("key", "meter_id"), AC_OUTPUT_ENERGY_METERS)
+    def test_increasing_value_is_accepted_after_rejected_decrease(self, key, meter_id):
+        coordinator = _make_coordinator()
+        previous_value = 10.0
+        previous_timestamp = "previous-timestamp"
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {
+            key: previous_value,
+            f"{key}_at": previous_timestamp,
+        }
+
+        rejected_value = (
+            previous_value
+            - _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH
+            - 0.001
+        )
+        coordinator._ingest_mqtt_live_values(
+            _data_report(PRIMARY_SERIAL, [[meter_id, str(rejected_value)]])
+        )
+        assert coordinator._mqtt_live_values[PRIMARY_SYSTEM][key] == previous_value
+
+        coordinator._ingest_mqtt_live_values(
+            _data_report(PRIMARY_SERIAL, [[meter_id, "10.5"]])
+        )
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live[key] == 10.5
+        assert live[f"{key}_at"] != previous_timestamp
+        assert live[f"{key}_source"] == "mqtt"
 
 
 class TestAcOutputEnergyPipeline:
