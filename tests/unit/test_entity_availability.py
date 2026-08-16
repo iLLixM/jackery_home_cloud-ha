@@ -9,11 +9,11 @@ number.py/select.py/switch.py/button.py all now delegate to the identical
 expression. This file only tests the *wiring* - that each entity's
 `available` property calls through to the coordinator with the right
 arguments and returns whatever it says - via a settable fake coordinator.
-The composite logic itself (device serial / last_update_success /
-is_mqtt_system / MQTT connection state / gateway LWT state) is tested in
-isolation in test_coordinator_control_availability.py, mirroring this
-suite's existing layering (e.g. `_resolve_mqtt_system` tested standalone in
-test_coordinator_mqtt_system_selection.py, the full cycle tested separately
+The composite logic itself (device serial / is_mqtt_system / MQTT connection
+state / gateway LWT state, deliberately independent of REST poll health) is
+tested in isolation in test_coordinator_control_availability.py, mirroring
+this suite's existing layering (e.g. `_resolve_mqtt_system` tested standalone
+in test_coordinator_mqtt_system_selection.py, the full cycle tested separately
 in test_coordinator_refresh_cycle.py).
 
 Previously, `available` computed `bool(device_sn) and super().available`

@@ -1087,9 +1087,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         This intentionally does NOT touch self.last_update_success. That
         field exclusively reflects REST poll health (set by HA core's
         DataUpdateCoordinator around _async_update_data) - it used to be
-        force-set True here on every MQTT event, which meant a real MQTT
-        broker outage could never surface through it. MQTT-specific
-        availability is now a separate signal - see
+        force-set True here on every MQTT event. MQTT-specific availability
+        is a separate signal and deliberately remains independent of
+        transient REST failures - see
         JackeryHomeCloudCoordinator.is_control_available() (discussion #6,
         item 4, "MQTT-aware availability").
         """
@@ -1961,14 +1961,19 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def is_control_available(self, system_id: str, device_sn: str) -> bool:
         """Return whether an MQTT-backed control/button entity should report available.
 
-        Discussion #6, item 4 ("MQTT-aware availability"): combines every
-        signal the backlog calls for - a resolvable device serial, the most
-        recent REST poll's actual success/failure (last_update_success is no
-        longer forced True by MQTT traffic, see _publish_runtime_update),
-        whether this is in fact the single system MQTT is configured for,
+        Discussion #6, item 4 ("MQTT-aware availability"): combines the
+        signals relevant to this independent transport - a resolvable device
+        serial, whether this is the single system MQTT is configured for,
         whether the MQTT client connection is currently up, and - only when
         a gateway LWT online/offline state has actually been observed for
         this system - that state.
+
+        REST poll health is intentionally not a prerequisite. These entities
+        communicate through MQTT and retain their resolved system/device
+        identity from the last successful refresh. A transient cloud API
+        failure must therefore not disable otherwise healthy MQTT controls.
+        ``last_update_success`` remains untouched by MQTT updates so REST
+        failures are still visible to REST-backed entities and diagnostics.
 
         No LWT observed yet is treated as available (optimistic default):
         the MQTT client is started in __init__.py before platforms are
@@ -1981,8 +1986,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         react to, not "we haven't heard yet".
         """
         if not device_sn:
-            return False
-        if not self.last_update_success:
             return False
         if not self.is_mqtt_system(system_id):
             return False
