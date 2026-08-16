@@ -1,10 +1,9 @@
 """Tests for JackeryHomeCloudCoordinator._apply_mqtt_live_values_to_bundle
 (Family C: coordinator ingestion/merge logic).
 
-This targets the exact logic discussed for PR #8 in this project's
-history: the unsigned AC-main-power MQTT meter is signed using
-`-sign(battery_power_mqtt)`, and every MQTT-sourced live value is gated
-behind a freshness window before being merged into the REST bundle.
+This targets the MQTT bundle merge and the complete AC-main sign decision
+sequence: full PV/battery/EPS balance, conservative partial-data fallbacks,
+the battery-only fallback, and freshness gating for every input.
 
 The method under test only reads/writes `self._mqtt_live_values` and
 plain dict arguments - it never touches `self.hass`/`self.data`/network
@@ -24,6 +23,7 @@ import pytest
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
 )
+from custom_components.jackery_home_cloud.const import AC_MAIN_IDLE_POWER_THRESHOLD_W
 from homeassistant.util import dt as dt_util
 
 SYSTEM_ID = "sys1"
@@ -34,6 +34,37 @@ def _make_coordinator(live_values: dict) -> JackeryHomeCloudCoordinator:
     coordinator = object.__new__(JackeryHomeCloudCoordinator)
     coordinator._mqtt_live_values = {SYSTEM_ID: live_values}
     return coordinator
+
+
+def _ac_main_live_values(
+    now,
+    *,
+    ac_main: float,
+    pv1: float | None = None,
+    pv2: float | None = None,
+    battery: float | None = None,
+    eps: float | None = None,
+    stale: frozenset[str] = frozenset(),
+) -> dict:
+    """Build timestamped AC-main inputs, optionally making sources stale."""
+    values = {
+        "ac_main_power_mqtt": ac_main,
+        "ac_main_power_mqtt_at": now,
+    }
+    inputs = {
+        "pv1_power_mqtt": pv1,
+        "pv2_power_mqtt": pv2,
+        "battery_power_mqtt": battery,
+        "eps_load_power_mqtt": eps,
+    }
+    for key, value in inputs.items():
+        if value is None:
+            continue
+        values[key] = value
+        values[f"{key}_at"] = (
+            now - timedelta(seconds=121) if key in stale else now
+        )
+    return values
 
 
 class TestNoLiveValues:
@@ -240,6 +271,240 @@ class TestAcMainPowerSignDerivation:
         merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
         assert merged["battery_power_mqtt"] == 1390.0
         assert merged["ac_main_power_mqtt"] == -1469.0
+
+
+class TestAcMainPowerDecisionMatrix:
+    """Lock down every documented AC-main sign-decision path.
+
+    The balance inputs determine only the sign. The value's magnitude must
+    always remain the absolute raw AC-main MQTT magnitude, and mqtt_live must
+    explain the selected decision for field diagnostics.
+    """
+
+    @pytest.mark.parametrize(
+        (
+            "inputs",
+            "expected_value",
+            "expected_candidate",
+            "expected_delta",
+            "expected_indicator",
+            "expected_source",
+        ),
+        (
+            pytest.param(
+                {
+                    "ac_main": 363.0,
+                    "pv1": 0.0,
+                    "pv2": 0.0,
+                    "battery": 234.0,
+                    "eps": -632.0,
+                },
+                363.0,
+                398.0,
+                35.0,
+                1.0,
+                "pv_battery_eps_balance_positive",
+                id="complete-positive-observed-device-values",
+            ),
+            pytest.param(
+                {
+                    "ac_main": 363.0,
+                    "pv1": 0.0,
+                    "pv2": 0.0,
+                    "battery": 200.0,
+                    "eps": 100.0,
+                },
+                -363.0,
+                -300.0,
+                -663.0,
+                -1.0,
+                "pv_battery_eps_balance_negative",
+                id="complete-negative-balance",
+            ),
+            pytest.param(
+                {
+                    "ac_main": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                    "pv1": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                    "pv2": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                    "battery": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                    "eps": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                },
+                -AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                0.0,
+                -AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                -1.0,
+                "internal_consumption_idle",
+                id="idle-threshold-is-inclusive",
+            ),
+            pytest.param(
+                {
+                    "ac_main": AC_MAIN_IDLE_POWER_THRESHOLD_W + 0.01,
+                    "pv1": 0.0,
+                    "pv2": 0.0,
+                    "battery": 0.0,
+                    "eps": 0.0,
+                },
+                AC_MAIN_IDLE_POWER_THRESHOLD_W + 0.01,
+                0.0,
+                -(AC_MAIN_IDLE_POWER_THRESHOLD_W + 0.01),
+                None,
+                "zero_balance_fallback",
+                id="complete-zero-balance-remains-unsigned",
+            ),
+            pytest.param(
+                {"ac_main": 120.0, "battery": -100.0, "eps": 20.0},
+                120.0,
+                80.0,
+                -40.0,
+                1.0,
+                "battery_eps_minimum_balance_positive",
+                id="missing-pv-positive-minimum-balance",
+            ),
+            pytest.param(
+                {"ac_main": 120.0, "battery": 100.0, "eps": 20.0},
+                120.0,
+                -120.0,
+                -240.0,
+                None,
+                "battery_eps_minimum_balance_inconclusive",
+                id="missing-pv-inconclusive-remains-unsigned",
+            ),
+            pytest.param(
+                {"ac_main": 40.0, "pv1": 100.0, "pv2": 10.0, "battery": 50.0},
+                40.0,
+                60.0,
+                20.0,
+                1.0,
+                "pv_battery_fallback_positive",
+                id="missing-eps-pv-battery-positive",
+            ),
+            pytest.param(
+                {"ac_main": 40.0, "pv1": 0.0, "pv2": 0.0, "battery": 100.0},
+                -40.0,
+                -100.0,
+                -140.0,
+                -1.0,
+                "pv_battery_fallback_negative",
+                id="missing-eps-pv-battery-negative",
+            ),
+            pytest.param(
+                {"ac_main": 40.0, "pv1": 50.0, "pv2": 50.0, "battery": 100.0},
+                40.0,
+                0.0,
+                -40.0,
+                None,
+                "pv_battery_fallback_zero",
+                id="missing-eps-pv-battery-zero-remains-unsigned",
+            ),
+            pytest.param(
+                {"ac_main": 363.0, "battery": 234.0},
+                -363.0,
+                None,
+                None,
+                -234.0,
+                "battery_fallback",
+                id="battery-only-charging",
+            ),
+            pytest.param(
+                {"ac_main": 363.0, "battery": -234.0},
+                363.0,
+                None,
+                None,
+                234.0,
+                "battery_fallback",
+                id="battery-only-discharging",
+            ),
+            pytest.param(
+                {"ac_main": -363.0, "battery": 0.0},
+                363.0,
+                None,
+                None,
+                None,
+                "unsigned_fallback",
+                id="zero-battery-remains-unsigned",
+            ),
+            pytest.param(
+                {"ac_main": -363.0},
+                363.0,
+                None,
+                None,
+                None,
+                "unsigned_fallback",
+                id="no-sign-input-remains-unsigned",
+            ),
+            pytest.param(
+                {
+                    "ac_main": 120.0,
+                    "pv1": 100.0,
+                    "pv2": 100.0,
+                    "battery": -100.0,
+                    "eps": 20.0,
+                    "stale": frozenset({"pv2_power_mqtt"}),
+                },
+                120.0,
+                80.0,
+                -40.0,
+                1.0,
+                "battery_eps_minimum_balance_positive",
+                id="stale-pv-uses-minimum-balance",
+            ),
+            pytest.param(
+                {
+                    "ac_main": 40.0,
+                    "pv1": 100.0,
+                    "pv2": 0.0,
+                    "battery": 50.0,
+                    "eps": 100.0,
+                    "stale": frozenset({"eps_load_power_mqtt"}),
+                },
+                40.0,
+                50.0,
+                10.0,
+                1.0,
+                "pv_battery_fallback_positive",
+                id="stale-eps-uses-pv-battery-fallback",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_sign_decision_and_diagnostics(
+        self,
+        inputs,
+        expected_value,
+        expected_candidate,
+        expected_delta,
+        expected_indicator,
+        expected_source,
+    ):
+        now = dt_util.utcnow()
+        raw_magnitude = inputs["ac_main"]
+        live = _ac_main_live_values(
+            now,
+            ac_main=raw_magnitude,
+            pv1=inputs.get("pv1"),
+            pv2=inputs.get("pv2"),
+            battery=inputs.get("battery"),
+            eps=inputs.get("eps"),
+            stale=inputs.get("stale", frozenset()),
+        )
+        coordinator = _make_coordinator(live)
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == expected_value
+        # Balance inputs may select only the sign; they must never replace the
+        # raw meter's magnitude, even if their numerical difference is large.
+        assert abs(merged["ac_main_power_mqtt"]) == abs(raw_magnitude)
+        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        assert metadata == {
+            "value": expected_value,
+            "source": "mqtt",
+            "raw_magnitude": raw_magnitude,
+            "balance_candidate": expected_candidate,
+            "balance_delta": expected_delta,
+            "sign_indicator": expected_indicator,
+            "sign_source": expected_source,
+        }
 
 
 class TestPowerValueFreshnessGating:

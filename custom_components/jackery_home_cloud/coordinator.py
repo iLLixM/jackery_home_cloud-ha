@@ -19,6 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from .api.client import JackeryApiClient
 from .const import (
+    AC_MAIN_IDLE_POWER_THRESHOLD_W,
     CONF_ACCOUNT,
     CONF_MQTT_SYSTEM_ID,
     CONF_MQTT_SYSTEM_SELECTION_PENDING,
@@ -2451,6 +2452,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # A non-positive lower bound does NOT prove a negative AC Main
                     # direction, because unknown PV generation could still make
                     # the real balance positive.
+                    sign_source = "battery_eps_minimum_balance_inconclusive"
                     _LOGGER.debug(
                         "AC main minimum balance inconclusive for system %s: "
                         "minimum_balance=%s; PV telemetry incomplete; "
@@ -2466,6 +2468,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 sign_indicator is None
                 and pv_power_complete
                 and battery_power_available
+                and not eps_load_power_available
             ):
                 balance_candidate = (
                     pv1_power_value
@@ -2480,6 +2483,9 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 elif balance_candidate < 0:
                     sign_indicator = -1.0
                     sign_source = "pv_battery_fallback_negative"
+
+                else:
+                    sign_source = "pv_battery_fallback_zero"
 
                 _LOGGER.debug(
                     "AC main PV/battery fallback for system %s: "
@@ -2500,6 +2506,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if (
                 sign_indicator is None
                 and battery_power_available
+                and not pv_power_complete
+                and not eps_load_power_available
                 and battery_power_signed != 0
             ):
                 sign_indicator = -battery_power_signed
