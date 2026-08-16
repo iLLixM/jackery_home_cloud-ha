@@ -24,6 +24,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 
 SYSTEM_ID = "sys1"
 AC_OUTPUT_ENERGY_KEYS = ("ac_output_energy_in", "ac_output_energy_out")
+RESTORE_SENSOR_KEYS = tuple(sorted(MQTT_RESTORE_SENSOR_KEYS))
 
 
 def _make_sensor(key: str) -> tuple[JackeryMetricSensor, SimpleNamespace]:
@@ -57,7 +58,7 @@ def test_ac_output_energy_counters_are_selected_for_restore():
     assert set(AC_OUTPUT_ENERGY_KEYS) <= MQTT_RESTORE_SENSOR_KEYS
 
 
-@pytest.mark.parametrize("key", sorted(MQTT_RESTORE_SENSOR_KEYS))
+@pytest.mark.parametrize("key", RESTORE_SENSOR_KEYS)
 def test_every_restore_sensor_is_a_numeric_total_increasing_energy_sensor(key):
     """Enforce the numeric energy-counter contract for the complete set.
 
@@ -78,17 +79,17 @@ def test_every_restore_sensor_is_a_numeric_total_increasing_energy_sensor(key):
     assert description.value_fn({key: "not-a-number"}) is None
 
 
-@pytest.mark.parametrize("key", AC_OUTPUT_ENERGY_KEYS)
+@pytest.mark.parametrize("key", RESTORE_SENSOR_KEYS)
 async def test_numeric_recorder_state_is_restored(key):
     sensor, _ = _make_sensor(key)
 
     await _add_with_last_state(sensor, "12.345")
 
     assert sensor.native_value == 12.345
-    assert sensor._restored_native_value == 12.345
+    assert sensor._last_known_native_value == 12.345
 
 
-@pytest.mark.parametrize("key", AC_OUTPUT_ENERGY_KEYS)
+@pytest.mark.parametrize("key", RESTORE_SENSOR_KEYS)
 @pytest.mark.parametrize("state", (None, "unknown", "unavailable", "", "not-a-number"))
 async def test_missing_or_invalid_recorder_state_is_ignored(key, state):
     sensor, _ = _make_sensor(key)
@@ -96,21 +97,48 @@ async def test_missing_or_invalid_recorder_state_is_ignored(key, state):
     await _add_with_last_state(sensor, state)
 
     assert sensor.native_value is None
-    assert sensor._restored_native_value is None
+    assert sensor._last_known_native_value is None
 
 
-@pytest.mark.parametrize("key", AC_OUTPUT_ENERGY_KEYS)
-async def test_current_mqtt_value_takes_precedence_and_restore_remains_fallback(key):
+@pytest.mark.parametrize("key", RESTORE_SENSOR_KEYS)
+async def test_current_mqtt_value_advances_last_known_fallback(key):
+    sensor, coordinator = _make_sensor(key)
+    await _add_with_last_state(sensor, "12.345")
+
+    coordinator.data["systems"][SYSTEM_ID][key] = "15.5"
+    assert sensor.native_value == 15.5
+    assert sensor._last_known_native_value == 15.5
+
+    # If the live value disappears or becomes stale on a later bundle merge,
+    # retain the newest accepted live counter, not the older startup state.
+    coordinator.data["systems"][SYSTEM_ID].pop(key)
+    assert sensor.native_value == 15.5
+
+
+@pytest.mark.parametrize("key", RESTORE_SENSOR_KEYS)
+async def test_live_value_becomes_fallback_without_recorder_state(key):
+    sensor, coordinator = _make_sensor(key)
+    await _add_with_last_state(sensor, None)
+
+    coordinator.data["systems"][SYSTEM_ID][key] = "15.5"
+    assert sensor.native_value == 15.5
+    assert sensor._last_known_native_value == 15.5
+
+    coordinator.data["systems"][SYSTEM_ID].pop(key)
+    assert sensor.native_value == 15.5
+
+
+@pytest.mark.parametrize("key", RESTORE_SENSOR_KEYS)
+async def test_invalid_current_value_does_not_poison_last_known_fallback(key):
     sensor, coordinator = _make_sensor(key)
     await _add_with_last_state(sensor, "12.345")
 
     coordinator.data["systems"][SYSTEM_ID][key] = "15.5"
     assert sensor.native_value == 15.5
 
-    # If the live value disappears or becomes stale on a later bundle merge,
-    # retain the last recorder value until MQTT supplies a fresh counter again.
-    coordinator.data["systems"][SYSTEM_ID].pop(key)
-    assert sensor.native_value == 12.345
+    coordinator.data["systems"][SYSTEM_ID][key] = "not-a-number"
+    assert sensor.native_value == 15.5
+    assert sensor._last_known_native_value == 15.5
 
 
 async def test_non_restore_sensor_does_not_query_the_recorder():

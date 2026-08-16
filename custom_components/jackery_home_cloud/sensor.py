@@ -658,7 +658,11 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         self._attr_unique_id = f"{unique_source}_{description.key}"
         self._attr_name = description.name
         self._attr_entity_category = description.entity_category
-        self._restored_native_value: Any | None = None
+        # Initialized from the recorder and subsequently advanced by every
+        # valid live value. MQTT-only TOTAL_INCREASING sensors can therefore
+        # keep their newest accepted counter when its bundle overlay expires,
+        # instead of jumping back to the older startup state.
+        self._last_known_native_value: float | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the last known state for selected MQTT-only sensors."""
@@ -678,7 +682,7 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         # energy sensor if a historical state cannot be converted.
         restored_value = _coerce_float(last_state.state)
         if restored_value is not None:
-            self._restored_native_value = restored_value
+            self._last_known_native_value = restored_value
 
     @property
     def native_value(self) -> Any:
@@ -688,9 +692,16 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         if bundle:
             current_value = self.entity_description.value_fn(bundle)
         if current_value is not None:
+            if self.entity_description.key in MQTT_RESTORE_SENSOR_KEYS:
+                # The restore-set invariant guarantees a numeric energy
+                # counter, but coerce once more at this state boundary so an
+                # invalid future description can never poison the fallback.
+                last_known_value = _coerce_float(current_value)
+                if last_known_value is not None:
+                    self._last_known_native_value = last_known_value
             return current_value
         if self.entity_description.key in MQTT_RESTORE_SENSOR_KEYS:
-            return self._restored_native_value
+            return self._last_known_native_value
         return None
 
 
