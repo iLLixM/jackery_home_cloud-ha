@@ -50,6 +50,45 @@ Install the only external dependency with:
 python -m pip install requests
 ```
 
+## Native Windows / PowerShell
+
+The PowerShell port `jackery-api-test.ps1` provides the same read-only REST
+diagnostics without Python or external PowerShell modules. It supports Windows
+PowerShell 5.1 (`powershell.exe`) as well as PowerShell 7 (`pwsh`).
+
+For a login-only test, let the script prompt for the password securely:
+
+```powershell
+.\jackery-api-test.ps1 `
+  -account 'you@example.com' `
+  -login-only
+```
+
+For non-interactive use, the password can be supplied through the environment:
+
+```powershell
+$env:JACKERY_PASSWORD = 'your-password'
+try {
+  .\jackery-api-test.ps1 `
+    -account 'you@example.com' `
+    -list-devices `
+    -all-systems `
+    -save '.\result.json'
+}
+finally {
+  Remove-Item Env:JACKERY_PASSWORD
+}
+```
+
+The public parameter names follow the same lowercase kebab-case convention as
+the Python script. Python uses two leading hyphens, while PowerShell uses its
+native single-hyphen syntax:
+
+```text
+Python:     --plain-password, --list-systems, --system-id
+PowerShell: -plain-password,  -list-systems,  -system-id
+```
+
 ## Basic Usage
 
 ### 1. Login test only
