@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from freezegun import freeze_time
+import pytest
 
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
@@ -43,6 +44,77 @@ class TestNoLiveValues:
         merged = coordinator._apply_mqtt_live_values_to_bundle("unknown_system", bundle)
         assert merged == bundle
         assert merged is not bundle  # must return a copy, not the original
+
+
+class TestExistingMqttBundleValuesRemainMerged:
+    """Guard unrelated MQTT bundle fields while AC-main logic is refactored.
+
+    Both fields used to be merged immediately next to the AC-main sign logic.
+    Keeping these assertions at the coordinator boundary prevents a large
+    rewrite of that logic from silently dropping values which downstream
+    sensors and switches still expect in the system bundle.
+    """
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_fresh_mqtt_daily_energy_updates_preserve_rest_summary(self):
+        now = dt_util.utcnow()
+        day_key = "20260101"
+        coordinator = _make_coordinator(
+            {
+                "battery_energy_charged_today": 2.5,
+                "battery_energy_charged_today_at": now,
+                "battery_energy_charged_today_day_key": day_key,
+                "battery_energy_discharged_today": 1.25,
+                "battery_energy_discharged_today_at": now,
+                "battery_energy_discharged_today_day_key": day_key,
+            }
+        )
+        rest_daily_energy = {
+            "solar_energy_generated_today": 4.0,
+            "battery_energy_charged_today": 1.0,
+            "battery_energy_discharged_today": 0.5,
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(
+            SYSTEM_ID,
+            {
+                "daily_energy": rest_daily_energy,
+                "trend_day_key": day_key,
+            },
+        )
+
+        # Fresh MQTT counters replace only their matching REST/trend values;
+        # unrelated members of the already assembled summary must survive.
+        assert merged["daily_energy"] == {
+            "solar_energy_generated_today": 4.0,
+            "battery_energy_charged_today": 2.5,
+            "battery_energy_discharged_today": 1.25,
+        }
+        assert merged["mqtt_live"]["battery_energy_charged_today"]["source"] == "mqtt"
+        assert merged["mqtt_live"]["battery_energy_discharged_today"]["source"] == "mqtt"
+
+    @pytest.mark.parametrize("ac_output_state", (True, False))
+    @freeze_time("2026-01-01 12:00:00")
+    def test_ac_output_state_and_mqtt_metadata_are_merged(self, ac_output_state):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                "ac_output_state": ac_output_state,
+                "ac_output_state_at": now,
+                "ac_output_state_source": "mqtt_data_set",
+            }
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        # The switch consumes the top-level value, while diagnostics and
+        # availability handling consume the accompanying mqtt_live metadata.
+        assert merged["ac_output_state"] is ac_output_state
+        assert merged["mqtt_live"]["ac_output_state"] == {
+            "value": ac_output_state,
+            "source": "mqtt_data_set",
+            "age_seconds": 0.0,
+        }
 
 
 class TestAcMainPowerSignDerivation:

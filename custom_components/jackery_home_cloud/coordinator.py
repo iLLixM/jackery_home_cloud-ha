@@ -2589,6 +2589,28 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ac_main_age_seconds,
             )
 
+        # Keep the daily REST/trend summary in the bundle after applying any
+        # fresher MQTT values above. This assignment must remain outside the
+        # AC-main branch: daily energy is independent of AC-main telemetry.
+        if daily_energy:
+            merged["daily_energy"] = daily_energy
+
+        # AC output control responses are cached in _mqtt_live_values by
+        # _ingest_mqtt_control_values. Publish both the state consumed by the
+        # switch and its provenance metadata on every coordinator merge.
+        ac_output_timestamp = live.get("ac_output_state_at")
+        ac_output_value = live.get("ac_output_state")
+        if isinstance(ac_output_value, bool):
+            merged["ac_output_state"] = ac_output_value
+            ac_output_age_seconds = None
+            if ac_output_timestamp is not None:
+                ac_output_age_seconds = (now - ac_output_timestamp).total_seconds()
+            mqtt_live["ac_output_state"] = {
+                "value": ac_output_value,
+                "source": live.get("ac_output_state_source", "mqtt"),
+                "age_seconds": ac_output_age_seconds,
+            }
+
         device_connection_timestamp = live.get("device_connection_at")
         device_connection_value = live.get("device_connection")
         if isinstance(device_connection_value, str):
