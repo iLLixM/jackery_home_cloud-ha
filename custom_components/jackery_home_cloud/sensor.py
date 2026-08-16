@@ -673,10 +673,12 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         if last_state.state in ("unknown", "unavailable", "", None):
             return
 
-        try:
-            self._restored_native_value = float(last_state.state)
-        except (TypeError, ValueError):
-            self._restored_native_value = last_state.state
+        # Every key in MQTT_RESTORE_SENSOR_KEYS represents a numeric energy
+        # counter. Do not expose arbitrary recorder data as a string-valued
+        # energy sensor if a historical state cannot be converted.
+        restored_value = _coerce_float(last_state.state)
+        if restored_value is not None:
+            self._restored_native_value = restored_value
 
     @property
     def native_value(self) -> Any:
