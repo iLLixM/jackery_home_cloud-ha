@@ -171,29 +171,29 @@ class TestMqttSystemFreezeAcrossPolls:
         # dedup marker itself, so this just proves it stays stable).
         assert coordinator._mqtt_system_last_warned == first_warned
 
-    async def test_mqtt_event_no_longer_forces_last_update_success_back_to_true_after_a_failed_poll(self, hass):
-        """Companion, at the full refresh-cycle level, to the fix verified
-        in test_entity_availability.py and
-        test_coordinator_control_availability.py: `_publish_runtime_update()`
-        (invoked by the real `async_handle_mqtt_message` entry point used by
-        mqtt_client's callback) used to unconditionally force
-        `last_update_success = True` whenever an MQTT event arrived, even if
-        the most recent REST poll had actually failed. It no longer touches
-        `last_update_success` at all (discussion #6, item 4, "MQTT-aware
-        availability") - MQTT-specific availability is now a separate
-        signal, see `JackeryHomeCloudCoordinator.is_control_available`.
+    async def test_failed_rest_poll_does_not_disable_healthy_mqtt_controls(self, hass):
+        """Keep REST diagnostics and MQTT availability as separate signals.
+
+        A failed cloud refresh must remain visible through
+        ``last_update_success``. At the same time, the already configured and
+        connected MQTT control path must stay available before and after a
+        subsequent MQTT event.
         """
         client = _make_client([[_system(SYSTEM_A, "SN-A")]])
-        coordinator = await _make_coordinator(hass, client)
+        coordinator = await _make_coordinator(hass, client, mqtt_system_id=SYSTEM_A)
         await coordinator.async_refresh()
+        coordinator._mqtt_state["connected"] = True
         assert coordinator.last_update_success is True
+        assert coordinator.is_control_available(SYSTEM_A, "SN-A") is True
 
         client.async_list_systems.side_effect = JackeryHomeApiError("REST temporarily unavailable")
         await coordinator.async_refresh()
         assert coordinator.last_update_success is False
+        assert coordinator.is_control_available(SYSTEM_A, "SN-A") is True
 
         await coordinator.async_handle_mqtt_message({})
         assert coordinator.last_update_success is False
+        assert coordinator.is_control_available(SYSTEM_A, "SN-A") is True
 
 
 class TestPendingMqttSystemSelectionMigration:

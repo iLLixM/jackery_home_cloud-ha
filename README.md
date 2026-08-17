@@ -70,6 +70,11 @@ The integration reads current REST system data such as:
 
 Selected existing sensors can prefer fresh MQTT values while continuing to use REST as a fallback when MQTT data is unavailable or stale.
 
+An optional, disabled-by-default `eps_load_power_inverted` sensor exposes
+the AC-socket power with its sign reversed. This is useful when an external
+AC-coupled solar inverter feeds the Jackery AC socket: feed-in is positive on
+the inverted sensor, while consumption is negative.
+
 ### Daily energy entities
 
 Daily energy sensors are derived from observed Jackery cloud trend endpoints:
@@ -123,6 +128,8 @@ The following cumulative energy entities are derived from MQTT meter reports:
 
 - Battery charged
 - Battery discharged
+- AC-Output energy in
+- AC-Output energy out
 - PV1 energy
 - PV2 energy
 - PV energy total
@@ -230,6 +237,8 @@ These include, depending on device support:
 - Battery power BMS1
 - Battery charged
 - Battery discharged
+- AC-Output energy in
+- AC-Output energy out
 - PV1 energy
 - PV2 energy
 - PV energy total

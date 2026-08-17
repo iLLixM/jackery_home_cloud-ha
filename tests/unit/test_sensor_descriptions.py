@@ -39,12 +39,15 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "battery_energy_remaining",
         "pv_power",
         "eps_load_power",
+        "eps_load_power_inverted",
         "other_load_power",
         "solar_energy_generated_today",
         "battery_energy_charged_today",
         "battery_energy_discharged_today",
         "battery_energy_charged_total",
         "battery_energy_discharged_total",
+        "ac_output_energy_in",
+        "ac_output_energy_out",
         "grid_energy_exported_today",
         "grid_energy_imported_today",
         "pv1_energy_today",
@@ -74,6 +77,8 @@ SIMPLE_UNIQUE_ID_KEYS = frozenset(
         "ac_main_power",
         "battery_power",
         "battery_power_bms1",
+        "ac_output_energy_in",
+        "ac_output_energy_out",
     }
 )
 
@@ -130,6 +135,30 @@ def test_battery_power_and_bms1_are_distinct_entities():
     assert battery_power_bms1.value_fn({"battery_power_mqtt": 123}) is None
 
 
+def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+
+    energy_in_description = descriptions["ac_output_energy_in"]
+    assert energy_in_description.requires_mqtt is True
+    assert energy_in_description.translation_key == "ac_output_energy_in"
+    assert energy_in_description.native_unit_of_measurement == "kWh"
+    assert energy_in_description.device_class == "energy"
+    assert energy_in_description.state_class == "total_increasing"
+    assert energy_in_description.value_fn({"ac_output_energy_in": "12.345"}) == 12.345
+
+
+def test_ac_output_energy_out_sensor_is_mqtt_only_cumulative_energy_counter():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+
+    energy_out_description = descriptions["ac_output_energy_out"]
+    assert energy_out_description.requires_mqtt is True
+    assert energy_out_description.translation_key == "ac_output_energy_out"
+    assert energy_out_description.native_unit_of_measurement == "kWh"
+    assert energy_out_description.device_class == "energy"
+    assert energy_out_description.state_class == "total_increasing"
+    assert energy_out_description.value_fn({"ac_output_energy_out": "12.345"}) == 12.345
+
+
 class TestMqttOrRestPrecedence:
     """discussion #6 Phase 3, item 10 ("Validate MQTT values against
     REST") regression-coverage gap: _mqtt_or_rest itself had no direct
@@ -146,6 +175,57 @@ class TestMqttOrRestPrecedence:
 
     def test_falls_back_to_rest_when_mqtt_value_is_not_coercible(self):
         assert _mqtt_or_rest({"grid_power_mqtt": None}, "grid_power_mqtt", 200.0) == 200.0
+
+
+class TestInvertedAcSocketPower:
+    def test_negative_feed_in_becomes_positive_generation(self):
+        description = {
+            item.key: item for item in SYSTEM_SENSOR_DESCRIPTIONS
+        }["eps_load_power_inverted"]
+
+        assert description.value_fn({"eps_load_power_mqtt": -450.0}) == 450.0
+
+    def test_positive_consumption_becomes_negative(self):
+        description = {
+            item.key: item for item in SYSTEM_SENSOR_DESCRIPTIONS
+        }["eps_load_power_inverted"]
+
+        assert description.value_fn({"eps_load_power_mqtt": 275.0}) == -275.0
+
+    def test_uses_rest_fallback_when_mqtt_value_is_absent(self):
+        description = {
+            item.key: item for item in SYSTEM_SENSOR_DESCRIPTIONS
+        }["eps_load_power_inverted"]
+        bundle = _nest(
+            ("monitor", "energyFlowChartVO", "acInfo", "epsLoadPower"),
+            -125.0,
+        )
+
+        assert description.value_fn(bundle) == 125.0
+
+    def test_missing_source_value_remains_unknown(self):
+        description = {
+            item.key: item for item in SYSTEM_SENSOR_DESCRIPTIONS
+        }["eps_load_power_inverted"]
+
+        assert description.value_fn({}) is None
+
+    def test_zero_is_normalized_to_positive_zero(self):
+        description = {
+            item.key: item for item in SYSTEM_SENSOR_DESCRIPTIONS
+        }["eps_load_power_inverted"]
+
+        assert str(description.value_fn({"eps_load_power_mqtt": 0.0})) == "0.0"
+
+    def test_entity_is_optional_and_disabled_by_default(self):
+        description = {
+            item.key: item for item in SYSTEM_SENSOR_DESCRIPTIONS
+        }["eps_load_power_inverted"]
+
+        assert description.entity_registry_enabled_default is False
+        assert description.translation_key == "eps_load_power_inverted"
+        assert description.device_class == "power"
+        assert description.state_class == "measurement"
 
 
 def _nest(path: tuple[str, ...], value: Any) -> dict[str, Any]:

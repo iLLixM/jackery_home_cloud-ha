@@ -86,13 +86,21 @@ MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID = "16967681"
 MQTT_EMS_PV_ENERGY_TOTAL_METER_ID = "16961537"
 MQTT_EMS_REBOOT_METER_ID = "22027265"
 MQTT_EMS_AC_OUTPUT_METER_ID = "23120897"
+# confirmed: value validated from observed MQTT traffic and measurement
+# Cumulative energy fed into the unit's physical AC output connection, in kWh.
+# PROPERTY_MAP: "16998401":"HB-EMS-MODEL_epsTotalGen"
+MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID = "16998401"
+# confirmed: value validated from observed MQTT traffic and measurement
+# Cumulative energy consumed from the unit's physical AC output connection, in kWh.
+# PROPERTY_MAP: "16963585":"HB-EMS-MODEL_epsTotalUse"
+MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID = "16963585"
 
-# confirmed: value/scale validated from observed MQTT traffic
+# confirmed: value and scale validated from observed MQTT traffic
 # PROPERTY_MAPPING "21548033":"HB-EMS-MODEL_systemSoc"
 MQTT_EMS_BATTERY_SOC_METER_ID: str = "21548033"
 MQTT_EMS_BATTERY_SOC_SCALE = 10.0
 
-# confirmed: value/scale validated from observed MQTT traffic
+# confirmed: value validated from observed MQTT traffic
 # PROPERTY_MAPPING "50490369": "HB-PCS-MODEL_pvP1"
 # PROPERTY_MAPPING "50490370": "HB-PCS-MODEL_pvP2"
 MQTT_PCS_PV1_POWER_METER_ID = "50490369"
@@ -120,6 +128,26 @@ MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 # fast ground truth for that comparison (see the cloud-side lag note on
 # MQTT_EMS_OTHER_LOAD_POWER_METER_ID below).
 MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
+# Experimental threshold used only for AC Main sign reconstruction.
+#
+# Real-world observations indicate that Jackery internal consumption
+# can cause a negative AC Main flow of roughly a few tens of watts
+# while PV, battery and EPS power are all close to zero.
+#
+# This is a heuristic threshold, not a confirmed protocol constant.
+AC_MAIN_IDLE_POWER_THRESHOLD_W: float = 50.0
+
+# Minimum positive lower-bound margin required when AC-main direction must be
+# inferred from battery and EPS alone because PV telemetry is incomplete.
+# A separate constant keeps this noise/loss allowance independently tunable
+# from the all-input idle-state heuristic above.
+AC_MAIN_MINIMUM_BALANCE_MARGIN_W: float = 50.0
+
+# Maximum timestamp spread for power samples combined to reconstruct the
+# AC-main direction. This is deliberately shorter than the minimum 5-second
+# fast-poll interval so values from adjacent poll cycles are not balanced as
+# though they described the same physical state.
+AC_MAIN_SAMPLE_MAX_SKEW_SECONDS: float = 2.0
 
 # Instantaneous system battery charge/discharge power reported by the EMS.
 # This value is expected to represent the combined battery power of the

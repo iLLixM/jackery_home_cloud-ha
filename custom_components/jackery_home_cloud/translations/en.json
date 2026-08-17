@@ -135,6 +135,15 @@
       "battery_count": {
         "name": "Battery count"
       },
+      "ac_output_energy_in": {
+        "name": "AC-Output energy in"
+      },
+      "ac_output_energy_out": {
+        "name": "AC-Output energy out"
+      },
+      "eps_load_power_inverted": {
+        "name": "AC-socket power inverted"
+      },
       "total_battery_capacity": {
         "name": "Total battery capacity"
       }

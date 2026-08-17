@@ -21,6 +21,10 @@ from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_STANDBY_RAW_OFF,
     MQTT_EMS_STANDBY_RAW_ON,
 )
+from custom_components.jackery_home_cloud.coordinator import (
+    JackeryHomeCloudCoordinator,
+    JackeryMqttSystem,
+)
 from custom_components.jackery_home_cloud.switch import (
     JackeryAcOutputSwitch,
     JackeryAutoStandbySwitch,
@@ -121,6 +125,64 @@ class TestAcOutputSwitch:
             await entity.async_turn_on()
 
         coordinator.async_set_meter_value.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("raw_state", "expected_state"),
+        (("1", True), ("0", False)),
+    )
+    def test_mqtt_control_response_reaches_switch_state(
+        self,
+        raw_state,
+        expected_state,
+    ):
+        """Cover the complete control-state path up to the HA entity.
+
+        A valid data_get/data_set response must survive ingestion and the
+        runtime coordinator merge before JackeryAcOutputSwitch can expose it.
+        This guards against dropping the merge block during unrelated
+        coordinator refactors.
+        """
+        coordinator = object.__new__(JackeryHomeCloudCoordinator)
+        coordinator.mqtt_system = JackeryMqttSystem(
+            system_id="sys1",
+            device_serial="SN1",
+        )
+        coordinator.data = {
+            "systems": {"sys1": {"system": {"systemNo": "SN1"}}},
+        }
+        coordinator._mqtt_live_values = {}
+        coordinator._mqtt_update_events = {}
+        coordinator._mqtt_state = {"connected": True}
+        coordinator.async_update_listeners = lambda: None
+        message = {
+            "payload_json": {
+                "cmd": "data_get",
+                "gw_sn": "SN1",
+                "info": {
+                    "dev_list": [
+                        {
+                            "dev_sn": "ems_SN1",
+                            "meter_list": [
+                                [MQTT_EMS_AC_OUTPUT_METER_ID, raw_state],
+                            ],
+                        }
+                    ],
+                },
+            },
+        }
+
+        coordinator._ingest_mqtt_control_values(message)
+        coordinator._publish_runtime_update()
+        entity = JackeryAcOutputSwitch(
+            coordinator=coordinator,
+            system_id="sys1",
+            bundle=coordinator.data["systems"]["sys1"],
+            mqtt_client=_FakeMqttClient(),
+            device_sn="SN1",
+        )
+
+        assert entity.is_on is expected_state
+        assert entity.extra_state_attributes["state_source"] == "mqtt_data_get"
 
 
 class TestStandbySwitch:

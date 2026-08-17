@@ -5,9 +5,10 @@
     MQTT system, device serial availability, gateway online state where
     available.
 
-`is_control_available` only reads `self.last_update_success`,
-`self.mqtt_system` (via `is_mqtt_system`), `self._mqtt_state`, and
-`self.data` - no `hass` needed, so the coordinator is built via
+`is_control_available` reads `self.mqtt_system` (via `is_mqtt_system`),
+`self._mqtt_state`, and `self.data`. REST health is deliberately independent:
+`last_update_success` is retained in the fixture so its non-influence can be
+verified explicitly. No `hass` is needed, so the coordinator is built via
 `object.__new__`, same pattern as test_coordinator_mqtt_system_selection.py.
 """
 
@@ -53,9 +54,10 @@ class TestIsControlAvailable:
         coordinator = _make_coordinator()
         assert coordinator.is_control_available(SYSTEM_ID, "") is False
 
-    def test_false_when_last_rest_poll_failed(self):
+    def test_true_when_last_rest_poll_failed_but_mqtt_is_healthy(self):
+        """A cloud API outage must not disable the independent MQTT path."""
         coordinator = _make_coordinator(last_update_success=False)
-        assert coordinator.is_control_available(SYSTEM_ID, "SN1") is False
+        assert coordinator.is_control_available(SYSTEM_ID, "SN1") is True
 
     def test_false_when_not_the_configured_mqtt_system(self):
         coordinator = _make_coordinator(mqtt_system_id=SYSTEM_ID)
@@ -66,9 +68,7 @@ class TestIsControlAvailable:
         assert coordinator.is_control_available(SYSTEM_ID, "SN1") is False
 
     def test_false_when_mqtt_broker_disconnected(self):
-        """The fix this method exists for: a real MQTT outage now makes
-        controls unavailable, where previously last_update_success was
-        force-reset to True on every MQTT event and never reflected this."""
+        """A real MQTT outage remains authoritative for MQTT controls."""
         coordinator = _make_coordinator(mqtt_connected=False)
         assert coordinator.is_control_available(SYSTEM_ID, "SN1") is False
 

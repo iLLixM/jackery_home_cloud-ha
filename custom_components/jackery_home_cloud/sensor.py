@@ -38,6 +38,8 @@ from .coordinator import JackeryHomeCloudCoordinator, _validate_and_pad_schedule
 PARALLEL_UPDATES = 0
 
 MQTT_RESTORE_SENSOR_KEYS: set[str] = {
+    "ac_output_energy_in",
+    "ac_output_energy_out",
     "battery_energy_charged_total",
     "battery_energy_discharged_total",
     "pv1_energy_total",
@@ -218,6 +220,30 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
     ),
     JackeryMetricDescription(
+        key="eps_load_power_inverted",
+        translation_key="eps_load_power_inverted",
+        name="AC-socket power inverted",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:power-plug",
+        entity_registry_enabled_default=False,
+        # Uses the exact same fresh-MQTT-with-REST-fallback source as
+        # eps_load_power, but reverses its sign for installations where an
+        # external AC-coupled solar inverter feeds power into the socket.
+        value_fn=lambda bundle: _invert_power(
+            _mqtt_or_rest(
+                bundle,
+                "eps_load_power_mqtt",
+                _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "epsLoadPower"),
+            )
+        ),
+        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
+            system_id,
+            _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "deviceNo"),
+        ),
+    ),
+    JackeryMetricDescription(
         key="other_load_power",
         name="Home-supply power",
         native_unit_of_measurement=UnitOfPower.WATT,
@@ -295,6 +321,30 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_energy_discharged_total")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ac_output_energy_in",
+        translation_key="ac_output_energy_in",
+        name="AC-Output energy in",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("ac_output_energy_in")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ac_output_energy_out",
+        translation_key="ac_output_energy_out",
+        name="AC-Output energy out",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(bundle.get("ac_output_energy_out")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
@@ -608,7 +658,11 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         self._attr_unique_id = f"{unique_source}_{description.key}"
         self._attr_name = description.name
         self._attr_entity_category = description.entity_category
-        self._restored_native_value: Any | None = None
+        # Initialized from the recorder and subsequently advanced by every
+        # valid live value. MQTT-only TOTAL_INCREASING sensors can therefore
+        # keep their newest accepted counter when its bundle overlay expires,
+        # instead of jumping back to the older startup state.
+        self._last_known_native_value: float | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the last known state for selected MQTT-only sensors."""
@@ -623,10 +677,12 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         if last_state.state in ("unknown", "unavailable", "", None):
             return
 
-        try:
-            self._restored_native_value = float(last_state.state)
-        except (TypeError, ValueError):
-            self._restored_native_value = last_state.state
+        # Every key in MQTT_RESTORE_SENSOR_KEYS represents a numeric energy
+        # counter. Do not expose arbitrary recorder data as a string-valued
+        # energy sensor if a historical state cannot be converted.
+        restored_value = _coerce_float(last_state.state)
+        if restored_value is not None:
+            self._last_known_native_value = restored_value
 
     @property
     def native_value(self) -> Any:
@@ -636,9 +692,16 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         if bundle:
             current_value = self.entity_description.value_fn(bundle)
         if current_value is not None:
+            if self.entity_description.key in MQTT_RESTORE_SENSOR_KEYS:
+                # The restore-set invariant guarantees a numeric energy
+                # counter, but coerce once more at this state boundary so an
+                # invalid future description can never poison the fallback.
+                last_known_value = _coerce_float(current_value)
+                if last_known_value is not None:
+                    self._last_known_native_value = last_known_value
             return current_value
         if self.entity_description.key in MQTT_RESTORE_SENSOR_KEYS:
-            return self._restored_native_value
+            return self._last_known_native_value
         return None
 
 
@@ -864,6 +927,16 @@ def _mqtt_or_rest(bundle: Mapping[str, Any], mqtt_key: str, rest_value: Any) -> 
     if mqtt_value is not None:
         return mqtt_value
     return _coerce_float(rest_value)
+
+
+def _invert_power(value: Any) -> float | None:
+    """Invert a power value while normalizing negative zero."""
+    numeric_value = _coerce_float(value)
+    if numeric_value is None:
+        return None
+    if numeric_value == 0:
+        return 0.0
+    return -numeric_value
 
 
 def _coerce_int(value: Any) -> int | None:
