@@ -29,6 +29,7 @@ from custom_components.jackery_home_cloud.coordinator import (
 )
 from custom_components.jackery_home_cloud.const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
+    AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
     AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
 )
 from homeassistant.util import dt as dt_util
@@ -155,6 +156,12 @@ class TestExistingMqttBundleValuesRemainMerged:
         }
         assert merged["mqtt_live"]["battery_energy_charged_today"]["source"] == "mqtt"
         assert merged["mqtt_live"]["battery_energy_discharged_today"]["source"] == "mqtt"
+        assert merged["mqtt_live"]["battery_energy_charged_today"][
+            "fallback_value"
+        ] == 1.0
+        assert merged["mqtt_live"]["battery_energy_discharged_today"][
+            "fallback_value"
+        ] == 0.5
 
     @pytest.mark.parametrize("ac_output_state", (True, False))
     @freeze_time("2026-01-01 12:00:00")
@@ -299,7 +306,7 @@ class TestExpiredMqttOverlaysAreRemoved:
         sorted(EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS),
     )
     @freeze_time("2026-01-01 12:00:00")
-    def test_expired_daily_energy_overlay_and_metadata_are_removed(self, key):
+    def test_expired_legacy_daily_overlay_without_fallback_is_removed(self, key):
         now = dt_util.utcnow()
         day_key = "20260101"
         coordinator = _make_coordinator(
@@ -329,6 +336,78 @@ class TestExpiredMqttOverlaysAreRemoved:
 
         assert key not in merged["daily_energy"]
         assert merged["daily_energy"]["solar_energy_generated_today"] == 8.0
+        assert "mqtt_live" not in merged
+
+    @pytest.mark.parametrize(
+        "key",
+        sorted(EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_expired_daily_overlay_restores_latest_rest_fallback(self, key):
+        now = dt_util.utcnow()
+        day_key = "20260101"
+        coordinator = _make_coordinator(
+            {
+                key: 4.2,
+                f"{key}_at": now,
+                f"{key}_day_key": day_key,
+            }
+        )
+
+        enriched = coordinator._apply_mqtt_live_values_to_bundle(
+            SYSTEM_ID,
+            {
+                "trend_day_key": day_key,
+                "daily_energy": {
+                    "solar_energy_generated_today": 8.0,
+                    key: 3.5,
+                },
+            },
+        )
+        assert enriched["daily_energy"][key] == 4.2
+        assert enriched["mqtt_live"][key]["fallback_value"] == 3.5
+        assert enriched["mqtt_live"][key]["fallback_day_key"] == day_key
+
+        with freeze_time("2026-01-01 12:15:01"):
+            merged = coordinator._apply_mqtt_live_values_to_bundle(
+                SYSTEM_ID,
+                enriched,
+            )
+
+        assert merged["daily_energy"][key] == 3.5
+        assert merged["daily_energy"]["solar_energy_generated_today"] == 8.0
+        assert "mqtt_live" not in merged
+
+    @pytest.mark.parametrize(
+        "key",
+        sorted(EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_previous_day_rest_fallback_is_not_restored(self, key):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                key: 4.2,
+                f"{key}_at": now - timedelta(seconds=901),
+                f"{key}_day_key": "20260101",
+            }
+        )
+        bundle = {
+            "trend_day_key": "20260101",
+            "daily_energy": {key: 4.2},
+            "mqtt_live": {
+                key: {
+                    "value": 4.2,
+                    "source": "mqtt",
+                    "fallback_value": 3.5,
+                    "fallback_day_key": "20251231",
+                }
+            },
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        assert key not in merged.get("daily_energy", {})
         assert "mqtt_live" not in merged
 
     @freeze_time("2026-01-01 12:00:00")
@@ -391,7 +470,11 @@ class TestExpiredMqttOverlaysAreRemoved:
                     "mqtt_live": {
                         "ac_output_energy_in": {"source": "mqtt"},
                         "grid_power_mqtt": {"source": "mqtt"},
-                        "battery_energy_charged_today": {"source": "mqtt"},
+                        "battery_energy_charged_today": {
+                            "source": "mqtt",
+                            "fallback_value": 3.5,
+                            "fallback_day_key": "20260101",
+                        },
                         "work_mode_raw": {"source": "mqtt"},
                     },
                 }
@@ -405,7 +488,7 @@ class TestExpiredMqttOverlaysAreRemoved:
         merged = coordinator.data["systems"][SYSTEM_ID]
         assert "ac_output_energy_in" not in merged
         assert "grid_power_mqtt" not in merged
-        assert "battery_energy_charged_today" not in merged["daily_energy"]
+        assert merged["daily_energy"]["battery_energy_charged_today"] == 3.5
         assert merged["daily_energy"]["solar_energy_generated_today"] == 8.0
         assert merged["work_mode_raw"] == "02"
         assert set(merged["mqtt_live"]) == {"work_mode_raw"}
@@ -619,6 +702,50 @@ class TestAcMainPowerDecisionMatrix:
                 id="missing-pv-positive-minimum-balance",
             ),
             pytest.param(
+                {"ac_main": 120.0, "battery": -20.0, "eps": 20.0},
+                120.0,
+                0.0,
+                -120.0,
+                None,
+                "battery_eps_minimum_balance_inconclusive",
+                id="missing-pv-zero-minimum-balance-remains-unsigned",
+            ),
+            pytest.param(
+                {"ac_main": 120.0, "battery": -21.0, "eps": 20.0},
+                120.0,
+                1.0,
+                -119.0,
+                None,
+                "battery_eps_minimum_balance_within_margin",
+                id="missing-pv-one-watt-residual-remains-unsigned",
+            ),
+            pytest.param(
+                {
+                    "ac_main": 120.0,
+                    "battery": -(AC_MAIN_MINIMUM_BALANCE_MARGIN_W + 20.0),
+                    "eps": 20.0,
+                },
+                120.0,
+                AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
+                AC_MAIN_MINIMUM_BALANCE_MARGIN_W - 120.0,
+                None,
+                "battery_eps_minimum_balance_within_margin",
+                id="missing-pv-margin-is-inclusive-and-remains-unsigned",
+            ),
+            pytest.param(
+                {
+                    "ac_main": 120.0,
+                    "battery": -(AC_MAIN_MINIMUM_BALANCE_MARGIN_W + 21.0),
+                    "eps": 20.0,
+                },
+                120.0,
+                AC_MAIN_MINIMUM_BALANCE_MARGIN_W + 1.0,
+                AC_MAIN_MINIMUM_BALANCE_MARGIN_W - 119.0,
+                1.0,
+                "battery_eps_minimum_balance_positive",
+                id="missing-pv-above-margin-proves-positive-flow",
+            ),
+            pytest.param(
                 {"ac_main": 120.0, "battery": 100.0, "eps": 20.0},
                 120.0,
                 -120.0,
@@ -782,6 +909,7 @@ class TestAcMainPowerDecisionMatrix:
             "balance_delta": expected_delta,
             "sign_indicator": expected_indicator,
             "sign_source": expected_source,
+            "minimum_balance_margin_w": AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
             "sample_max_skew_seconds": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
             "sample_skew_seconds": sample_skew_seconds,
         }

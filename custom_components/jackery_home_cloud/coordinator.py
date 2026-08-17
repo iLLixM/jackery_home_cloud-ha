@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from .api.client import JackeryApiClient
 from .const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
+    AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
     AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
     CONF_ACCOUNT,
     CONF_MQTT_SYSTEM_ID,
@@ -2084,11 +2085,27 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mqtt_live.pop(key, None)
 
         # The daily battery counters live inside the REST/trend summary rather
-        # than as top-level MQTT-only fields. Remove them only when mqtt_live
-        # proves that the current value is an earlier MQTT overlay; a clean REST
-        # bundle has no such metadata and must retain its summary values.
+        # than as top-level MQTT-only fields. Their provenance metadata retains
+        # the REST/trend value hidden by an earlier MQTT overlay. Restore that
+        # fallback before freshness is evaluated so an expired overlay cannot
+        # make the daily sensor unknown during a REST outage. A clean REST
+        # bundle has no such metadata and keeps its summary values unchanged.
         for key in _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS:
-            if key in mqtt_live:
+            prior_metadata = mqtt_live.get(key)
+            if isinstance(prior_metadata, Mapping):
+                fallback_value = _coerce_float(
+                    prior_metadata.get("fallback_value")
+                )
+                fallback_day_key = prior_metadata.get("fallback_day_key")
+                if fallback_value is not None and bundle_day_key in (
+                    None,
+                    fallback_day_key,
+                ):
+                    daily_energy[key] = fallback_value
+                else:
+                    daily_energy.pop(key, None)
+                mqtt_live.pop(key, None)
+            elif key in mqtt_live:
                 daily_energy.pop(key, None)
                 mqtt_live.pop(key, None)
 
@@ -2098,12 +2115,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if charged_value is not None and charged_timestamp is not None:
             charged_age_seconds = (now - charged_timestamp).total_seconds()
             if charged_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS and bundle_day_key in (None, charged_day_key):
+                charged_fallback_value = _coerce_float(
+                    daily_energy.get("battery_energy_charged_today")
+                )
                 daily_energy["battery_energy_charged_today"] = charged_value
                 mqtt_live["battery_energy_charged_today"] = {
                     "value": charged_value,
                     "source": "mqtt",
                     "day_key": charged_day_key,
                     "age_seconds": charged_age_seconds,
+                    "fallback_value": charged_fallback_value,
+                    "fallback_day_key": bundle_day_key,
                 }
 
         discharged_timestamp = live.get("battery_energy_discharged_today_at")
@@ -2112,12 +2134,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if discharged_value is not None and discharged_timestamp is not None:
             discharged_age_seconds = (now - discharged_timestamp).total_seconds()
             if discharged_age_seconds <= MQTT_LIVE_VALUE_MAX_AGE_SECONDS and bundle_day_key in (None, discharged_day_key):
+                discharged_fallback_value = _coerce_float(
+                    daily_energy.get("battery_energy_discharged_today")
+                )
                 daily_energy["battery_energy_discharged_today"] = discharged_value
                 mqtt_live["battery_energy_discharged_today"] = {
                     "value": discharged_value,
                     "source": "mqtt",
                     "day_key": discharged_day_key,
                     "age_seconds": discharged_age_seconds,
+                    "fallback_value": discharged_fallback_value,
+                    "fallback_day_key": bundle_day_key,
                 }
 
         charged_total_timestamp = live.get("battery_energy_charged_total_at")
@@ -2536,21 +2563,34 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                 balance_candidate = minimum_balance
 
-                # A strictly positive lower bound means any real PV generation
-                # can only make the actual balance more positive.
-                if minimum_balance > 0:
+                # A positive lower bound is useful only when it exceeds the
+                # observed noise/internal-loss margin. Otherwise a tiny meter
+                # residual could assign its sign to the entire AC-main
+                # magnitude even though the direction remains ambiguous.
+                if minimum_balance > AC_MAIN_MINIMUM_BALANCE_MARGIN_W:
                     sign_indicator = 1.0
                     sign_source = "battery_eps_minimum_balance_positive"
 
                     _LOGGER.debug(
                         "AC main minimum-balance decision for system %s: "
                         "-battery=%s - eps=%s -> minimum_balance=%s; "
-                        "PV incomplete; decision=+; source=%s",
+                        "PV incomplete; margin=%s; decision=+; source=%s",
                         system_id,
                         battery_power_signed,
                         eps_load_power_signed,
                         minimum_balance,
+                        AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
                         sign_source,
+                    )
+                elif minimum_balance > 0:
+                    sign_source = "battery_eps_minimum_balance_within_margin"
+                    _LOGGER.debug(
+                        "AC main minimum balance within noise/loss margin for "
+                        "system %s: minimum_balance=%s, margin=%s; "
+                        "PV telemetry incomplete; continuing with fallback logic",
+                        system_id,
+                        minimum_balance,
+                        AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
                     )
                 else:
                     # A non-positive lower bound does NOT prove a negative AC Main
@@ -2682,6 +2722,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "balance_delta": balance_delta,
                 "sign_indicator": sign_indicator,
                 "sign_source": sign_source,
+                "minimum_balance_margin_w": AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
                 "sample_max_skew_seconds": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
                 "sample_skew_seconds": {
                     "pv1": pv1_power_skew_seconds,

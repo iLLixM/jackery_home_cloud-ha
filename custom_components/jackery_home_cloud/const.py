@@ -137,6 +137,12 @@ MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
 # This is a heuristic threshold, not a confirmed protocol constant.
 AC_MAIN_IDLE_POWER_THRESHOLD_W: float = 50.0
 
+# Minimum positive lower-bound margin required when AC-main direction must be
+# inferred from battery and EPS alone because PV telemetry is incomplete.
+# A separate constant keeps this noise/loss allowance independently tunable
+# from the all-input idle-state heuristic above.
+AC_MAIN_MINIMUM_BALANCE_MARGIN_W: float = 50.0
+
 # Maximum timestamp spread for power samples combined to reconstruct the
 # AC-main direction. This is deliberately shorter than the minimum 5-second
 # fast-poll interval so values from adjacent poll cycles are not balanced as
