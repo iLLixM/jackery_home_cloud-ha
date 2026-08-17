@@ -2356,7 +2356,10 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # 4. Battery available only:
         #    - use the original battery-only heuristic
         #
-        # 5. No usable sign information:
+        # 5. No strict decision, but every generally fresh input is low-power:
+        #    - recognize stable internal consumption across split EMS/PCS replies
+        #
+        # 6. No usable sign information:
         #    - keep the MQTT magnitude unsigned/positive
 
         ac_main_timestamp = live.get("ac_main_power_mqtt_at")
@@ -2370,6 +2373,22 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             battery_power_signed = merged.get("battery_power_mqtt")
             eps_load_power_signed = merged.get("eps_load_power_mqtt")
+
+            # The general power-value merge above already removed stale MQTT
+            # overlays and reapplied only samples inside the 120-second live
+            # window. Keep that broader freshness information separate from
+            # the much stricter contemporaneous cohort used for dynamic power
+            # balancing below. It is safe to use the broader cohort only for
+            # the bounded low-power standby fallback added after all strict
+            # sign decisions.
+            battery_power_fresh = isinstance(
+                battery_power_signed,
+                (int, float),
+            )
+            eps_load_power_fresh = isinstance(
+                eps_load_power_signed,
+                (int, float),
+            )
 
             # General freshness controls whether a power value is published as
             # a sensor. Sign reconstruction is stricter: every input must also
@@ -2393,14 +2412,14 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pv2_power_timestamp,
             )
 
-            battery_power_available = isinstance(
-                battery_power_signed,
-                (int, float),
-            ) and _sample_is_contemporaneous(battery_power_skew_seconds)
-            eps_load_power_available = isinstance(
-                eps_load_power_signed,
-                (int, float),
-            ) and _sample_is_contemporaneous(eps_load_power_skew_seconds)
+            battery_power_available = (
+                battery_power_fresh
+                and _sample_is_contemporaneous(battery_power_skew_seconds)
+            )
+            eps_load_power_available = (
+                eps_load_power_fresh
+                and _sample_is_contemporaneous(eps_load_power_skew_seconds)
+            )
 
             pv_power_complete = (
                 pv1_power_fresh
@@ -2667,7 +2686,56 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
             # ------------------------------------------------------------------
-            # 5. Apply ONLY the selected sign to the raw MQTT magnitude.
+            # 5. Stable low-power / standby fallback.
+            #
+            # Fast polling requests EMS and PCS meters together, but the
+            # device may return them in separate MQTT messages. Publishing
+            # after the first partial reply makes the new values temporarily
+            # non-contemporaneous with the other device group's still-fresh
+            # values. Dynamic balance decisions must retain the strict sample
+            # skew guard, while an otherwise inconclusive set of fresh values
+            # that is uniformly low-power is sufficient evidence for the
+            # observed negative internal standby consumption.
+            #
+            # Limit combined PV magnitude as well as each remaining input so
+            # two individually small PV channels cannot together establish a
+            # material positive flow that is then mislabeled as standby.
+            # ------------------------------------------------------------------
+            fresh_low_power_idle = (
+                sign_indicator is None
+                and ac_main_magnitude_abs <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                and pv1_power_fresh
+                and pv2_power_fresh
+                and pv1_power_value is not None
+                and pv2_power_value is not None
+                and (
+                    abs(pv1_power_value) + abs(pv2_power_value)
+                    <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                )
+                and battery_power_fresh
+                and abs(battery_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+                and eps_load_power_fresh
+                and abs(eps_load_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
+            )
+            if fresh_low_power_idle:
+                sign_indicator = -1.0
+                sign_source = "internal_consumption_idle_fresh_fallback"
+                _LOGGER.debug(
+                    "AC main fresh low-power fallback for system %s: "
+                    "magnitude=%s, pv1=%s, pv2=%s, battery=%s, eps=%s; "
+                    "sample skews may exceed %s seconds; decision=-; source=%s",
+                    system_id,
+                    ac_main_magnitude_abs,
+                    pv1_power_value,
+                    pv2_power_value,
+                    battery_power_signed,
+                    eps_load_power_signed,
+                    AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+                    sign_source,
+                )
+
+            # ------------------------------------------------------------------
+            # 6. Apply ONLY the selected sign to the raw MQTT magnitude.
             #
             # balance_candidate/sign_indicator must NEVER replace the actual
             # AC Main power magnitude.

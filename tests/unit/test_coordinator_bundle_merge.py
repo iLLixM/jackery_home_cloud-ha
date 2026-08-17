@@ -1023,6 +1023,192 @@ class TestAcMainPowerSampleCoherence:
         )
 
 
+class TestAcMainPowerStandbyStability:
+    """Keep observed negative standby consumption stable across split replies."""
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_fresh_low_power_inputs_outside_strict_skew_remain_negative(self):
+        """Reproduce the observed +16 W fallback after split PCS/EMS replies."""
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=16.0,
+                pv1=0.0,
+                pv2=0.0,
+                battery=0.0,
+                eps=0.0,
+                skew_seconds={
+                    "battery_power_mqtt": 60.0,
+                    "eps_load_power_mqtt": 60.0,
+                },
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == -16.0
+        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        assert metadata["sign_indicator"] == -1.0
+        assert (
+            metadata["sign_source"]
+            == "internal_consumption_idle_fresh_fallback"
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_split_poll_sequence_never_flips_standby_positive(self):
+        """Exercise coherent, PCS-first, and completed EMS/PCS bundle states."""
+        now = dt_util.utcnow()
+        previous_poll = now - timedelta(seconds=60)
+        live = _ac_main_live_values(
+            previous_poll,
+            ac_main=16.0,
+            pv1=0.0,
+            pv2=0.0,
+            battery=0.0,
+            eps=0.0,
+        )
+        coordinator = _make_coordinator(live)
+
+        coherent_previous = coordinator._apply_mqtt_live_values_to_bundle(
+            SYSTEM_ID,
+            {},
+        )
+
+        # A new PCS reply updates PV and AC Main before the corresponding EMS
+        # reply. The retained EMS samples are fresh but intentionally outside
+        # the strict two-second dynamic-balance cohort.
+        for key in (
+            "ac_main_power_mqtt_at",
+            "pv1_power_mqtt_at",
+            "pv2_power_mqtt_at",
+        ):
+            live[key] = now
+        pcs_first = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        for key in ("battery_power_mqtt_at", "eps_load_power_mqtt_at"):
+            live[key] = now
+        completed_poll = coordinator._apply_mqtt_live_values_to_bundle(
+            SYSTEM_ID,
+            {},
+        )
+
+        assert coherent_previous["ac_main_power_mqtt"] == -16.0
+        assert pcs_first["ac_main_power_mqtt"] == -16.0
+        assert completed_poll["ac_main_power_mqtt"] == -16.0
+        assert (
+            pcs_first["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "internal_consumption_idle_fresh_fallback"
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_fresh_low_power_fallback_threshold_is_inclusive(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                pv1=AC_MAIN_IDLE_POWER_THRESHOLD_W / 2,
+                pv2=AC_MAIN_IDLE_POWER_THRESHOLD_W / 2,
+                battery=AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                eps=AC_MAIN_IDLE_POWER_THRESHOLD_W,
+                skew_seconds={
+                    "pv1_power_mqtt": 60.0,
+                    "pv2_power_mqtt": 60.0,
+                    "battery_power_mqtt": 60.0,
+                    "eps_load_power_mqtt": 60.0,
+                },
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == -AC_MAIN_IDLE_POWER_THRESHOLD_W
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "internal_consumption_idle_fresh_fallback"
+        )
+
+    @pytest.mark.parametrize(
+        "overrides",
+        (
+            pytest.param({"ac_main": 50.01}, id="ac-main-above-threshold"),
+            pytest.param({"pv1": 25.01, "pv2": 25.0}, id="combined-pv-above-threshold"),
+            pytest.param({"battery": 50.01}, id="battery-above-threshold"),
+            pytest.param({"eps": 50.01}, id="eps-above-threshold"),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_low_power_fallback_does_not_cross_any_threshold(self, overrides):
+        now = dt_util.utcnow()
+        inputs = {
+            "ac_main": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+            "pv1": AC_MAIN_IDLE_POWER_THRESHOLD_W / 2,
+            "pv2": AC_MAIN_IDLE_POWER_THRESHOLD_W / 2,
+            "battery": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+            "eps": AC_MAIN_IDLE_POWER_THRESHOLD_W,
+        }
+        inputs.update(overrides)
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                **inputs,
+                skew_seconds={
+                    "pv1_power_mqtt": 60.0,
+                    "pv2_power_mqtt": 60.0,
+                    "battery_power_mqtt": 60.0,
+                    "eps_load_power_mqtt": 60.0,
+                },
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == abs(inputs["ac_main"])
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "unsigned_fallback"
+        )
+
+    @pytest.mark.parametrize(
+        "stale_key",
+        (
+            "pv1_power_mqtt",
+            "pv2_power_mqtt",
+            "battery_power_mqtt",
+            "eps_load_power_mqtt",
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_stale_input_cannot_establish_standby_fallback(self, stale_key):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=16.0,
+                pv1=0.0,
+                pv2=0.0,
+                battery=0.0,
+                eps=0.0,
+                stale=frozenset({stale_key}),
+                skew_seconds={
+                    "pv1_power_mqtt": 60.0,
+                    "pv2_power_mqtt": 60.0,
+                    "battery_power_mqtt": 60.0,
+                    "eps_load_power_mqtt": 60.0,
+                },
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == 16.0
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "unsigned_fallback"
+        )
+
+
 class TestPowerValueFreshnessGating:
     @freeze_time("2026-01-01 12:00:00")
     def test_fresh_power_value_is_merged(self):
