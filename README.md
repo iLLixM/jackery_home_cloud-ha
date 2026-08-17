@@ -17,7 +17,7 @@ See the comprehensive [API documentation](docs/jackery_home_cloud_api_readme.md)
 
 The Home Assistant integration and the associated API and MQTT research were primarily developed and validated with a Jackery HomePower 2000 Ultra.
 
-Current release: `0.4.0`
+Current release: `0.4.1`
 
 The integration is currently able to:
 
@@ -47,7 +47,7 @@ MQTT support does not use Home Assistant's own MQTT integration. The Jackery MQT
 
 ---
 
-## Features in v0.4.0
+## Features in v0.4.1
 
 ### System-oriented device model
 
@@ -637,7 +637,7 @@ Security-sensitive findings should be reported privately before technical detail
 
 This is active community software.
 
-Version `0.4.0` introduces the first broad MQTT telemetry and control architecture for Jackery Home Cloud systems, including active polling, verified writes, schedules, expanded diagnostics, system-level battery power, and defensive single-primary-system MQTT handling.
+Version `0.4.1` builds on the MQTT telemetry and control architecture introduced in v0.4.0. It adds explicit MQTT-system selection, expanded protocol diagnostics, AC-output energy counters, hardened MQTT freshness and restore handling, and more robust AC-main direction inference, including stable negative standby consumption.
 
 The integration should still be treated as unofficial software that depends on undocumented interfaces.
 
