@@ -175,6 +175,15 @@ KNOWN_NON_LITERAL_PRODUCERS = {
     "battery_count",
     "total_battery_capacity_kwh",
     "daily_energy",
+    # Experimental power meters are produced by the validated
+    # experimental_power_values loop in coordinator ingestion. The loop uses
+    # bundle_key as a variable, so this intentionally simple AST scan cannot
+    # connect its literal tuple entries to updated.update().
+    "pcs_active_power_l1_mqtt",
+    "pcs_apparent_power_mqtt",
+    "pcs_active_power_mqtt",
+    "ems_other_load_power_l1_mqtt",
+    "ems_on_grid_power_mqtt",
 }
 
 

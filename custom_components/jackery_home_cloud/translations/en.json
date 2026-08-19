@@ -144,6 +144,21 @@
       "eps_load_power_inverted": {
         "name": "AC-socket power inverted"
       },
+      "pcs_active_power_l1": {
+        "name": "PCS active power L1"
+      },
+      "pcs_apparent_power": {
+        "name": "PCS apparent power"
+      },
+      "pcs_active_power": {
+        "name": "PCS active power"
+      },
+      "ems_other_load_power_l1": {
+        "name": "EMS other load power L1"
+      },
+      "ems_on_grid_power": {
+        "name": "EMS on-grid power"
+      },
       "total_battery_capacity": {
         "name": "Total battery capacity"
       }

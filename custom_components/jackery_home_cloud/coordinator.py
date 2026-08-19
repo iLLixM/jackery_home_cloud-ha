@@ -51,13 +51,18 @@ from .const import (
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
     MQTT_EMS_EPS_LOAD_POWER_METER_ID,
     MQTT_EMS_GRID_POWER_METER_ID,
+    MQTT_EMS_ON_GRID_POWER_METER_ID,
     MQTT_EMS_WORK_MODE_METER_ID,
     MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
+    MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
     MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
     MQTT_EMS_STANDBY_METER_ID,
     MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS,
     MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
     MQTT_PCS_AC_MAIN_POWER_METER_ID,
+    MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+    MQTT_PCS_ACTIVE_POWER_METER_ID,
+    MQTT_PCS_APPARENT_POWER_METER_ID,
     MQTT_PCS_PV1_POWER_METER_ID,
     MQTT_PCS_PV2_POWER_METER_ID,
     TREND_DATE_FORMAT,
@@ -111,6 +116,11 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "grid_power_mqtt",
         "eps_load_power_mqtt",
         "ac_main_power_mqtt",
+        "pcs_active_power_l1_mqtt",
+        "pcs_apparent_power_mqtt",
+        "pcs_active_power_mqtt",
+        "ems_other_load_power_l1_mqtt",
+        "ems_on_grid_power_mqtt",
     }
 )
 _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS: frozenset[str] = frozenset(
@@ -133,11 +143,16 @@ _FAST_EMS_METER_IDS: tuple[str, ...] = (
     MQTT_EMS_GRID_POWER_METER_ID,
     MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
     MQTT_EMS_EPS_LOAD_POWER_METER_ID,
+    MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
+    MQTT_EMS_ON_GRID_POWER_METER_ID,
 )
 _FAST_PCS_METER_IDS: tuple[str, ...] = (
     MQTT_PCS_PV1_POWER_METER_ID,
     MQTT_PCS_PV2_POWER_METER_ID,
     MQTT_PCS_AC_MAIN_POWER_METER_ID,
+    MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+    MQTT_PCS_APPARENT_POWER_METER_ID,
+    MQTT_PCS_ACTIVE_POWER_METER_ID,
 )
 _FAST_BMS1_METER_IDS: tuple[str, ...] = (MQTT_BMS1_BATTERY_POWER_METER_ID,)
 
@@ -1253,6 +1268,24 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=MQTT_PCS_AC_MAIN_POWER_METER_ID,
             dev_sn_prefix="pcs",
         )
+        pcs_active_power_l1 = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+            dev_sn_prefix="pcs",
+        )
+        pcs_apparent_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_APPARENT_POWER_METER_ID,
+            dev_sn_prefix="pcs",
+        )
+        pcs_active_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_ACTIVE_POWER_METER_ID,
+            dev_sn_prefix="pcs",
+        )
         battery_power_bms1 = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1263,6 +1296,16 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             payload,
             device_serial=gw_sn,
             meter_id=MQTT_EMS_OTHER_LOAD_POWER_METER_ID,
+        )
+        ems_other_load_power_l1 = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
+        )
+        ems_on_grid_power = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_EMS_ON_GRID_POWER_METER_ID,
         )
         grid_power_raw = extract_ems_meter_value(
             payload,
@@ -1336,8 +1379,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and pv2_power is None
             and work_mode_raw is None
             and ac_main_power_magnitude is None
+            and pcs_active_power_l1 is None
+            and pcs_apparent_power is None
+            and pcs_active_power is None
             and battery_power_bms1 is None
             and other_load_power is None
+            and ems_other_load_power_l1 is None
+            and ems_on_grid_power is None
             and grid_power_raw is None
             and eps_load_power is None
             and discharge_limit_soc_raw is None
@@ -1621,6 +1669,65 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 system_id,
                 MQTT_PCS_AC_MAIN_POWER_METER_ID,
                 ac_main_power_magnitude,
+            )
+
+        # These experimental PROPERTY_MAP meters are retained as raw signed
+        # observations. Do not normalize their signs or feed them into the
+        # AC-main heuristic until field validation establishes their physical
+        # measurement boundaries and direction conventions.
+        experimental_power_values = (
+            (
+                "pcs_active_power_l1_mqtt",
+                pcs_active_power_l1,
+                MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+                "PCS active power L1",
+                "W",
+            ),
+            (
+                "pcs_apparent_power_mqtt",
+                pcs_apparent_power,
+                MQTT_PCS_APPARENT_POWER_METER_ID,
+                "PCS apparent power",
+                "VA",
+            ),
+            (
+                "pcs_active_power_mqtt",
+                pcs_active_power,
+                MQTT_PCS_ACTIVE_POWER_METER_ID,
+                "PCS active power",
+                "W",
+            ),
+            (
+                "ems_other_load_power_l1_mqtt",
+                ems_other_load_power_l1,
+                MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
+                "EMS other load power L1",
+                "W",
+            ),
+            (
+                "ems_on_grid_power_mqtt",
+                ems_on_grid_power,
+                MQTT_EMS_ON_GRID_POWER_METER_ID,
+                "EMS on-grid power",
+                "W",
+            ),
+        )
+        for bundle_key, value, meter_id, label, unit in experimental_power_values:
+            if value is None:
+                continue
+            updated.update(
+                {
+                    bundle_key: value,
+                    f"{bundle_key}_at": received_at,
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT %s for %s from meter %s: %s %s",
+                label,
+                system_id,
+                meter_id,
+                value,
+                unit,
             )
 
         if battery_power_bms1 is not None:
@@ -2322,6 +2429,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "other_load_power_mqtt",
             "grid_power_mqtt",
             "eps_load_power_mqtt",
+            "pcs_active_power_l1_mqtt",
+            "pcs_apparent_power_mqtt",
+            "pcs_active_power_mqtt",
+            "ems_other_load_power_l1_mqtt",
+            "ems_on_grid_power_mqtt",
         ):
             timestamp = live.get(f"{key}_at")
             value = _coerce_float(live.get(key))

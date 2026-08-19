@@ -144,6 +144,21 @@
       "eps_load_power_inverted": {
         "name": "AC-Ausgang Leistung invertiert"
       },
+      "pcs_active_power_l1": {
+        "name": "PCS-Wirkleistung L1"
+      },
+      "pcs_apparent_power": {
+        "name": "PCS-Scheinleistung"
+      },
+      "pcs_active_power": {
+        "name": "PCS-Wirkleistung"
+      },
+      "ems_other_load_power_l1": {
+        "name": "EMS-Sonstige Lastleistung L1"
+      },
+      "ems_on_grid_power": {
+        "name": "EMS-Netzleistung"
+      },
       "total_battery_capacity": {
         "name": "Gesamte Batteriekapazität"
       }

@@ -33,6 +33,11 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "co2_saved",
         "grid_power",
         "ac_main_power",
+        "pcs_active_power_l1",
+        "pcs_apparent_power",
+        "pcs_active_power",
+        "ems_other_load_power_l1",
+        "ems_on_grid_power",
         "battery_soc",
         "battery_power",
         "battery_power_bms1",
@@ -75,6 +80,11 @@ SIMPLE_UNIQUE_ID_KEYS = frozenset(
         "total_charge_amount",
         "co2_saved",
         "ac_main_power",
+        "pcs_active_power_l1",
+        "pcs_apparent_power",
+        "pcs_active_power",
+        "ems_other_load_power_l1",
+        "ems_on_grid_power",
         "battery_power",
         "battery_power_bms1",
         "ac_output_energy_in",
@@ -145,6 +155,37 @@ def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():
     assert energy_in_description.device_class == "energy"
     assert energy_in_description.state_class == "total_increasing"
     assert energy_in_description.value_fn({"ac_output_energy_in": "12.345"}) == 12.345
+
+
+def test_experimental_power_sensors_preserve_raw_values_and_are_optional_diagnostics():
+    """Keep validation meters independent from the AC-main heuristic."""
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    expected = {
+        "pcs_active_power_l1": ("pcs_active_power_l1_mqtt", "W", "power"),
+        "pcs_apparent_power": (
+            "pcs_apparent_power_mqtt",
+            "VA",
+            "apparent_power",
+        ),
+        "pcs_active_power": ("pcs_active_power_mqtt", "W", "power"),
+        "ems_other_load_power_l1": (
+            "ems_other_load_power_l1_mqtt",
+            "W",
+            "power",
+        ),
+        "ems_on_grid_power": ("ems_on_grid_power_mqtt", "W", "power"),
+    }
+
+    for sensor_key, (bundle_key, unit, device_class) in expected.items():
+        description = descriptions[sensor_key]
+        assert description.requires_mqtt is True
+        assert description.entity_registry_enabled_default is False
+        assert description.entity_category == "diagnostic"
+        assert description.native_unit_of_measurement == unit
+        assert description.device_class == device_class
+        assert description.state_class == "measurement"
+        assert description.value_fn({bundle_key: "-8.5"}) == -8.5
+        assert description.value_fn({}) is None
 
 
 def test_ac_output_energy_out_sensor_is_mqtt_only_cumulative_energy_counter():

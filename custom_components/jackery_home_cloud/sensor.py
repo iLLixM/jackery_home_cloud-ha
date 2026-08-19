@@ -16,7 +16,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfApparentPower,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform
@@ -116,6 +121,85 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
             bundle,
             "ac_main_power_mqtt",
             _safe_get(bundle, "monitor", "energyFlowChartVO", "acMainVO", "acMainPower"),
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    # Experimental raw MQTT meters used to validate possible alternatives or
+    # supplements to the heuristic AC-main direction. Keep them diagnostic,
+    # disabled by default and independent from the heuristic until their
+    # physical boundaries and sign conventions are confirmed in the field.
+    JackeryMetricDescription(
+        key="pcs_active_power_l1",
+        translation_key="pcs_active_power_l1",
+        name="PCS active power L1",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("pcs_active_power_l1_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pcs_apparent_power",
+        translation_key="pcs_apparent_power",
+        name="PCS apparent power",
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("pcs_apparent_power_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pcs_active_power",
+        translation_key="pcs_active_power",
+        name="PCS active power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("pcs_active_power_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ems_other_load_power_l1",
+        translation_key="ems_other_load_power_l1",
+        name="EMS other load power L1",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("ems_other_load_power_l1_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ems_on_grid_power",
+        translation_key="ems_on_grid_power",
+        name="EMS on-grid power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("ems_on_grid_power_mqtt")
         ),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),

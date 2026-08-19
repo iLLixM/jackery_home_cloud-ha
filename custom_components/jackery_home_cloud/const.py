@@ -106,6 +106,16 @@ MQTT_EMS_BATTERY_SOC_SCALE = 10.0
 MQTT_PCS_PV1_POWER_METER_ID = "50490369"
 MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 
+# Experimental PCS power meters identified from observed MQTT PROPERTY_MAP
+# data. Their raw values and signs are intentionally exposed unchanged while
+# their relationship to AC Main is validated against real hardware.
+# PROPERTY_MAPPING "50397185":"HB-PCS-MODEL_activePL1"
+MQTT_PCS_ACTIVE_POWER_L1_METER_ID: str = "50397185"
+# PROPERTY_MAPPING "50393089":"HB-PCS-MODEL_apparentPower"
+MQTT_PCS_APPARENT_POWER_METER_ID: str = "50393089"
+# PROPERTY_MAPPING "50394113":"HB-PCS-MODEL_activePower"
+MQTT_PCS_ACTIVE_POWER_METER_ID: str = "50394113"
+
 # Magnitude of REST ac_main_power (power at the AC-main/PCS boundary tied to
 # battery charge/discharge) - distinct from MQTT_EMS_EPS_LOAD_POWER_METER_ID
 # (AC output socket power) and MQTT_EMS_OTHER_LOAD_POWER_METER_ID (household
@@ -177,6 +187,14 @@ MQTT_BMS1_BATTERY_POWER_METER_ID: str = "33659905"
 # not by itself evidence of a wrong MQTT mapping - check whether REST has
 # actually caught up before concluding anything.
 MQTT_EMS_OTHER_LOAD_POWER_METER_ID: str = "16936961"
+
+# Experimental EMS power meters identified from observed MQTT PROPERTY_MAP
+# data. Keep these separate from the established aggregate other-load and grid
+# meters until their measurement boundaries and sign conventions are proven.
+# PROPERTY_MAPPING "23122945":"HB-EMS-MODEL_otherLoadP1"
+MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID: str = "23122945"
+# PROPERTY_MAPPING "16934913":"HB-EMS-MODEL_onGridPower"
+MQTT_EMS_ON_GRID_POWER_METER_ID: str = "16934913"
 
 # Raw value is sign-flipped relative to REST grid_power, so store as -raw.
 # Negative while "Power fed into the grid"; positive while "Power drawn from the grid"

@@ -54,6 +54,11 @@ EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
     "grid_power_mqtt",
     "eps_load_power_mqtt",
     "ac_main_power_mqtt",
+    "pcs_active_power_l1_mqtt",
+    "pcs_apparent_power_mqtt",
+    "pcs_active_power_mqtt",
+    "ems_other_load_power_l1_mqtt",
+    "ems_on_grid_power_mqtt",
 }
 EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS = {
     "battery_energy_charged_today",

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import logging
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from freezegun import freeze_time
 import pytest
@@ -32,14 +33,21 @@ from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_CHARGE_WINDOW_METER_IDS,
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
     MQTT_EMS_EPS_LOAD_POWER_METER_ID,
+    MQTT_EMS_ON_GRID_POWER_METER_ID,
+    MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
     MQTT_PCS_AC_MAIN_POWER_METER_ID,
+    MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+    MQTT_PCS_ACTIVE_POWER_METER_ID,
+    MQTT_PCS_APPARENT_POWER_METER_ID,
     MQTT_PCS_PV1_POWER_METER_ID,
     MQTT_PCS_PV2_POWER_METER_ID,
 )
 from custom_components.jackery_home_cloud.coordinator import (
     JackeryHomeCloudCoordinator,
     JackeryMqttSystem,
+    _FAST_EMS_METER_IDS,
+    _FAST_PCS_METER_IDS,
     _MQTT_TOTAL_ALLOWED_DECREASE_TOLERANCE_KWH,
     _TOTALS_EMS_METER_IDS,
     _validate_and_pad_schedule_raw,
@@ -58,8 +66,6 @@ AC_OUTPUT_ENERGY_METERS = (
     ("ac_output_energy_in", MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID),
     ("ac_output_energy_out", MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID),
 )
-
-
 def _make_coordinator() -> JackeryHomeCloudCoordinator:
     coordinator = object.__new__(JackeryHomeCloudCoordinator)
     coordinator.mqtt_system = JackeryMqttSystem(system_id=PRIMARY_SYSTEM, device_serial=PRIMARY_SERIAL)
@@ -117,9 +123,127 @@ def _power_data_report(gw_sn: str) -> dict:
     }
 
 
+def _experimental_power_data_report(gw_sn: str) -> dict:
+    """Build the combined EMS/PCS response observed during MQTT tracing."""
+    return {
+        "payload_json": {
+            "cmd": "data_get",
+            "gw_sn": gw_sn,
+            "info": {
+                "dev_list": [
+                    {
+                        "dev_sn": f"ems_{gw_sn}",
+                        "meter_list": [
+                            [MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID, "140"],
+                            [MQTT_EMS_ON_GRID_POWER_METER_ID, "0.000000"],
+                        ],
+                    },
+                    {
+                        "dev_sn": f"pcs_{gw_sn}",
+                        "meter_list": [
+                            [MQTT_PCS_ACTIVE_POWER_L1_METER_ID, "-8.000000"],
+                            [MQTT_PCS_APPARENT_POWER_METER_ID, "4.000000"],
+                            [MQTT_PCS_ACTIVE_POWER_METER_ID, "6.000000"],
+                        ],
+                    },
+                ],
+                "result": "0",
+                "reason": "ok",
+            },
+        }
+    }
+
+
 def test_ac_output_energy_meters_are_in_slow_totals_poll_group():
     assert MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID in _TOTALS_EMS_METER_IDS
     assert MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID in _TOTALS_EMS_METER_IDS
+
+
+class TestExperimentalPowerFastPolling:
+    def test_meter_ids_are_in_the_correct_fast_device_groups(self):
+        assert {
+            MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
+            MQTT_EMS_ON_GRID_POWER_METER_ID,
+        } <= set(_FAST_EMS_METER_IDS)
+        assert {
+            MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+            MQTT_PCS_APPARENT_POWER_METER_ID,
+            MQTT_PCS_ACTIVE_POWER_METER_ID,
+        } <= set(_FAST_PCS_METER_IDS)
+
+    async def test_fast_request_places_all_meters_under_the_correct_devices(self):
+        coordinator = _make_coordinator()
+        mqtt_client = SimpleNamespace(async_publish_json=AsyncMock())
+        coordinator.config_entry = SimpleNamespace(
+            runtime_data=SimpleNamespace(mqtt_client=mqtt_client)
+        )
+
+        await coordinator.async_request_fast_live_meter_values()
+
+        mqtt_client.async_publish_json.assert_awaited_once()
+        _, payload = mqtt_client.async_publish_json.await_args.args
+        assert mqtt_client.async_publish_json.await_args.kwargs == {"qos": 1}
+        meter_lists = {
+            device["dev_sn"]: device["meter_list"]
+            for device in payload["info"]["dev_list"]
+        }
+        assert meter_lists[f"ems_{PRIMARY_SERIAL}"] == list(_FAST_EMS_METER_IDS)
+        assert meter_lists[f"pcs_{PRIMARY_SERIAL}"] == list(_FAST_PCS_METER_IDS)
+
+
+class TestExperimentalPowerPipeline:
+    @freeze_time("2026-01-01 12:00:00")
+    def test_trace_response_reaches_all_raw_sensor_values(self):
+        """Preserve the observed values, especially their differing signs."""
+        coordinator = _make_coordinator()
+        coordinator._ingest_mqtt_live_values(
+            _experimental_power_data_report(PRIMARY_SERIAL)
+        )
+
+        expected_values = {
+            "pcs_active_power_l1_mqtt": -8.0,
+            "pcs_apparent_power_mqtt": 4.0,
+            "pcs_active_power_mqtt": 6.0,
+            "ems_other_load_power_l1_mqtt": 140.0,
+            "ems_on_grid_power_mqtt": 0.0,
+        }
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert {key: live[key] for key in expected_values} == expected_values
+        assert {
+            live[f"{key}_at"] for key in expected_values
+        } == {datetime(2026, 1, 1, 12, 0, tzinfo=UTC)}
+
+        source_bundle = coordinator.data["systems"][PRIMARY_SYSTEM]
+        merged = coordinator._apply_mqtt_live_values_to_bundle(
+            PRIMARY_SYSTEM,
+            source_bundle,
+        )
+        coordinator.data["systems"][PRIMARY_SYSTEM] = merged
+
+        descriptions = {
+            description.key: description
+            for description in SYSTEM_SENSOR_DESCRIPTIONS
+        }
+        sensor_to_bundle_key = {
+            "pcs_active_power_l1": "pcs_active_power_l1_mqtt",
+            "pcs_apparent_power": "pcs_apparent_power_mqtt",
+            "pcs_active_power": "pcs_active_power_mqtt",
+            "ems_other_load_power_l1": "ems_other_load_power_l1_mqtt",
+            "ems_on_grid_power": "ems_on_grid_power_mqtt",
+        }
+        for sensor_key, bundle_key in sensor_to_bundle_key.items():
+            expected_value = expected_values[bundle_key]
+            assert merged[bundle_key] == expected_value
+            assert merged["mqtt_live"][bundle_key] == {
+                "value": expected_value,
+                "source": "mqtt",
+            }
+            sensor = JackeryMetricSensor(
+                coordinator=coordinator,
+                system_id=PRIMARY_SYSTEM,
+                description=descriptions[sensor_key],
+            )
+            assert sensor.native_value == expected_value
 
 
 class TestMqttReportTimestampCoherence:

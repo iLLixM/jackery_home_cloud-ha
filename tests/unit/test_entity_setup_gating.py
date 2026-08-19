@@ -32,6 +32,13 @@ from custom_components.jackery_home_cloud.sensor import (
 
 PRIMARY = "sys-primary"
 SECONDARY = "sys-secondary"
+EXPERIMENTAL_POWER_SENSOR_KEYS = {
+    "pcs_active_power_l1",
+    "pcs_apparent_power",
+    "pcs_active_power",
+    "ems_other_load_power_l1",
+    "ems_on_grid_power",
+}
 
 
 class _FakeCoordinator:
@@ -260,7 +267,7 @@ class TestCapabilityGating:
 
 
 class TestSensorCapabilityGating:
-    def test_confirmed_model_requires_mqtt_sensors_are_enabled_by_default(self):
+    def test_confirmed_model_keeps_only_experimental_mqtt_sensors_disabled(self):
         coordinator = _FakeCoordinator(
             {"systems": {PRIMARY: _bundle("SN1")}}, mqtt_system_id=PRIMARY, model_confirmed=True
         )
@@ -271,7 +278,21 @@ class TestSensorCapabilityGating:
         for entity in entities:
             description = getattr(entity, "entity_description", None)
             if description is not None and description.key in requires_mqtt_keys:
-                assert getattr(entity, "_attr_entity_registry_enabled_default", True) is True
+                if description.key in EXPERIMENTAL_POWER_SENSOR_KEYS:
+                    assert entity.entity_registry_enabled_default is False
+                else:
+                    # Preserve the original capability-gating assertion: a
+                    # confirmed model must not dynamically disable ordinary
+                    # MQTT sensors. Individual descriptions may still be
+                    # intentionally optional for unrelated product reasons.
+                    assert (
+                        getattr(
+                            entity,
+                            "_attr_entity_registry_enabled_default",
+                            True,
+                        )
+                        is True
+                    )
 
     def test_unconfirmed_model_requires_mqtt_sensors_and_schedule_sensor_are_disabled_by_default(self):
         coordinator = _FakeCoordinator(
