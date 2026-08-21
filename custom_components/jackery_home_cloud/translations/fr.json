@@ -135,6 +135,12 @@
       "battery_count": {
         "name": "Nombre de batteries"
       },
+      "bms1_temperature_ambient": {
+        "name": "Température ambiante BMS1"
+      },
+      "bms1_temperature_avg_cell": {
+        "name": "Température moyenne des cellules BMS1"
+      },
       "total_battery_capacity": {
         "name": "Capacité totale de la batterie"
       }

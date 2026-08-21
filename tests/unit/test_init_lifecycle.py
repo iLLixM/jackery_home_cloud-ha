@@ -146,9 +146,9 @@ class TestAsyncSetupEntryMqttEnabled:
         mqtt_client.async_start.assert_awaited_once()
         assert mqtt_client.device_serial == "SN1"
         assert entry.runtime_data.mqtt_client is mqtt_client
-        # Three async_track_time_interval unsub callbacks registered (fast +
-        # totals + config reconciliation polling) via entry.async_on_unload.
-        assert len(entry._on_unload) == 3
+        # Four async_track_time_interval unsub callbacks registered (fast +
+        # slow BMS1 + totals + config reconciliation polling) via entry.async_on_unload.
+        assert len(entry._on_unload) == 4
         # Cancel the real timers registered above so they don't linger past
         # this test (async_track_time_interval schedules a real asyncio
         # timer; nothing else in this direct-call test would ever cancel it).

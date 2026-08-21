@@ -173,6 +173,16 @@ MQTT_EMS_BATTERY_POWER_METER_ID: str = "16931841"
 # PROPERTY_MAPPING "33659905":"HB-BMS-MODEL_power"
 MQTT_BMS1_BATTERY_POWER_METER_ID: str = "33659905"
 
+# BMS1 temperature readings: ambient temperature around/in the battery pack
+# and average cell temperature of the battery. Both raw values are scaled by / 10.
+# Confirmed: value validated from observed MQTT traffic.
+# PROPERTY_MAP: "33619969": "HB-BMS-MODEL_ambT" (ambient temperature)
+MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID: str = "33619969"
+MQTT_BMS1_TEMPERATURE_AMBIENT_SCALE = 10.0
+# PROPERTY_MAP: "33618945": "HB-BMS-MODEL_avgCellT" (average cell temperature)
+MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID: str = "33618945"
+MQTT_BMS1_TEMPERATURE_AVG_CELL_SCALE = 10.0
+
 # Household load power, signed like REST other_load_power itself. Do not
 # confuse with the unsigned MQTT_PCS_AC_MAIN_POWER_METER_ID above - they
 # read the same value only when grid_power is ~0.

@@ -159,6 +159,12 @@
       "ems_on_grid_power": {
         "name": "EMS on-grid power"
       },
+      "bms1_temperature_ambient": {
+        "name": "BMS1 ambient temperature"
+      },
+      "bms1_temperature_avg_cell": {
+        "name": "BMS1 average cell temperature"
+      },
       "total_battery_capacity": {
         "name": "Total battery capacity"
       }

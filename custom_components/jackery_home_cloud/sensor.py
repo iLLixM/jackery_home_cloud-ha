@@ -21,6 +21,7 @@ from homeassistant.const import (
     UnitOfApparentPower,
     UnitOfEnergy,
     UnitOfPower,
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -246,6 +247,33 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # MQTT_BMS1_BATTERY_POWER_METER_ID in const.py for the sign
         # convention.
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_bms1_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="bms1_temperature_ambient",
+        translation_key="bms1_temperature_ambient",
+        name="BMS1 ambient temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        # Ambient temperature around/in the battery pack. Confirmed via MQTT traces.
+        # PROPERTY_MAP: "33619969": "HB-BMS-MODEL_ambT"
+        value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_ambient_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="bms1_temperature_avg_cell",
+        translation_key="bms1_temperature_avg_cell",
+        name="BMS1 average cell temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        requires_mqtt=True,
+        # Average cell temperature of the battery pack. Confirmed via MQTT traces.
+        # PROPERTY_MAP: "33618945": "HB-BMS-MODEL_avgCellT"
+        value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_avg_cell_mqtt")),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(

@@ -59,6 +59,8 @@ EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
     "pcs_active_power_mqtt",
     "ems_other_load_power_l1_mqtt",
     "ems_on_grid_power_mqtt",
+    "bms1_temperature_ambient_mqtt",
+    "bms1_temperature_avg_cell_mqtt",
 }
 EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS = {
     "battery_energy_charged_today",

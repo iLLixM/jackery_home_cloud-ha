@@ -42,6 +42,10 @@ from .const import (
     MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
     MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
     MQTT_BMS1_BATTERY_POWER_METER_ID,
+    MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID,
+    MQTT_BMS1_TEMPERATURE_AMBIENT_SCALE,
+    MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID,
+    MQTT_BMS1_TEMPERATURE_AVG_CELL_SCALE,
     MQTT_EMS_AC_OUTPUT_METER_ID,
     MQTT_EMS_AUTO_STANDBY_METER_ID,
     MQTT_EMS_DISCHARGE_LIMIT_SOC_METER_ID,
@@ -112,6 +116,8 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "pv_power_mqtt",
         "battery_power_mqtt",
         "battery_power_bms1_mqtt",
+        "bms1_temperature_ambient_mqtt",
+        "bms1_temperature_avg_cell_mqtt",
         "other_load_power_mqtt",
         "grid_power_mqtt",
         "eps_load_power_mqtt",
@@ -155,6 +161,11 @@ _FAST_PCS_METER_IDS: tuple[str, ...] = (
     MQTT_PCS_ACTIVE_POWER_METER_ID,
 )
 _FAST_BMS1_METER_IDS: tuple[str, ...] = (MQTT_BMS1_BATTERY_POWER_METER_ID,)
+
+_SLOW_BMS1_METER_IDS: tuple[str, ...] = (
+    MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID,
+    MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID,
+)
 
 _TOTALS_EMS_METER_IDS: tuple[str, ...] = (
     MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
@@ -754,6 +765,10 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Slow periodic group: cumulative energy totals."""
         await self._async_request_meter_values(ems_meter_ids=_TOTALS_EMS_METER_IDS, log_label="totals")
 
+    async def async_request_slow_bms1_live_meter_values(self) -> None:
+        """Slow periodic group: BMS1 temperature readings."""
+        await self._async_request_meter_values(bms1_meter_ids=_SLOW_BMS1_METER_IDS, log_label="slow_bms1")
+
     async def async_request_config_live_meter_values(self) -> None:
         """Configuration/settings group: only requested on connect and after a write."""
         await self._async_request_meter_values(ems_meter_ids=_CONFIG_EMS_METER_IDS, log_label="config")
@@ -778,7 +793,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 *_SCHEDULE_EMS_METER_IDS,
             ),
             pcs_meter_ids=_FAST_PCS_METER_IDS,
-            bms1_meter_ids=_FAST_BMS1_METER_IDS,
+            bms1_meter_ids=(*_FAST_BMS1_METER_IDS, *_SLOW_BMS1_METER_IDS),
             log_label="all",
         )
 
@@ -1292,6 +1307,18 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=MQTT_BMS1_BATTERY_POWER_METER_ID,
             dev_sn_prefix="bms1",
         )
+        bms1_temperature_ambient_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID,
+            dev_sn_prefix="bms1",
+        )
+        bms1_temperature_avg_cell_raw = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID,
+            dev_sn_prefix="bms1",
+        )
         other_load_power = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1742,6 +1769,38 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 system_id,
                 MQTT_BMS1_BATTERY_POWER_METER_ID,
                 battery_power_bms1,
+            )
+
+        if bms1_temperature_ambient_raw is not None:
+            bms1_temperature_ambient = bms1_temperature_ambient_raw / MQTT_BMS1_TEMPERATURE_AMBIENT_SCALE
+            updated.update(
+                {
+                    "bms1_temperature_ambient_mqtt": bms1_temperature_ambient,
+                    "bms1_temperature_ambient_mqtt_at": received_at,
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT BMS1 ambient temperature for %s from meter %s: raw=%s -> %s °C",
+                system_id,
+                MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID,
+                bms1_temperature_ambient_raw,
+                bms1_temperature_ambient,
+            )
+
+        if bms1_temperature_avg_cell_raw is not None:
+            bms1_temperature_avg_cell = bms1_temperature_avg_cell_raw / MQTT_BMS1_TEMPERATURE_AVG_CELL_SCALE
+            updated.update(
+                {
+                    "bms1_temperature_avg_cell_mqtt": bms1_temperature_avg_cell,
+                    "bms1_temperature_avg_cell_mqtt_at": received_at,
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT BMS1 average cell temperature for %s from meter %s: raw=%s -> %s °C",
+                system_id,
+                MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID,
+                bms1_temperature_avg_cell_raw,
+                bms1_temperature_avg_cell,
             )
 
         if other_load_power is not None:
@@ -2426,6 +2485,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key in (
             "battery_power_mqtt",
             "battery_power_bms1_mqtt",
+            "bms1_temperature_ambient_mqtt",
+            "bms1_temperature_avg_cell_mqtt",
             "other_load_power_mqtt",
             "grid_power_mqtt",
             "eps_load_power_mqtt",
