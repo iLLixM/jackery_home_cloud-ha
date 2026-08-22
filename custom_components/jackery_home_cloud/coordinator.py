@@ -63,6 +63,7 @@ from .const import (
     MQTT_EMS_STANDBY_METER_ID,
     MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS,
     MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
+    MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS,
     MQTT_PCS_AC_MAIN_POWER_METER_ID,
     MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
     MQTT_PCS_ACTIVE_POWER_METER_ID,
@@ -116,8 +117,6 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "pv_power_mqtt",
         "battery_power_mqtt",
         "battery_power_bms1_mqtt",
-        "bms1_temperature_ambient_mqtt",
-        "bms1_temperature_avg_cell_mqtt",
         "other_load_power_mqtt",
         "grid_power_mqtt",
         "eps_load_power_mqtt",
@@ -127,6 +126,12 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "pcs_active_power_mqtt",
         "ems_other_load_power_l1_mqtt",
         "ems_on_grid_power_mqtt",
+    }
+)
+_MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS: frozenset[str] = frozenset(
+    {
+        "bms1_temperature_ambient_mqtt",
+        "bms1_temperature_avg_cell_mqtt",
     }
 )
 _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS: frozenset[str] = frozenset(
@@ -2242,6 +2247,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key in (
             _MQTT_FRESHNESS_GATED_ENERGY_KEYS
             | _MQTT_FRESHNESS_GATED_POWER_KEYS
+            | _MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS
         ):
             # These top-level names are either explicitly suffixed `_mqtt`
             # or are MQTT-only cumulative counters, so no REST value can be
@@ -2485,8 +2491,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key in (
             "battery_power_mqtt",
             "battery_power_bms1_mqtt",
-            "bms1_temperature_ambient_mqtt",
-            "bms1_temperature_avg_cell_mqtt",
             "other_load_power_mqtt",
             "grid_power_mqtt",
             "eps_load_power_mqtt",
@@ -2502,6 +2506,21 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 value is not None
                 and timestamp is not None
                 and (now - timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+            ):
+                merged[key] = value
+                mqtt_live[key] = {"value": value, "source": "mqtt"}
+
+        # BMS1 temperatures use the slow 300-second polling group. Their own
+        # freshness window deliberately spans three poll cycles instead of the
+        # 120-second limit used for fast power/SOC samples.
+        for key in _MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS:
+            timestamp = live.get(f"{key}_at")
+            value = _coerce_float(live.get(key))
+            if (
+                value is not None
+                and timestamp is not None
+                and (now - timestamp).total_seconds()
+                <= MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS
             ):
                 merged[key] = value
                 mqtt_live[key] = {"value": value, "source": "mqtt"}

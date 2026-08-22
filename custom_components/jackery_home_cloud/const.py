@@ -77,6 +77,10 @@ MQTT_CONFIG_RECONCILE_INTERVAL_SECONDS = 1800
 # value, or the power/SOC sensors it gates will flap between MQTT and REST
 # every poll cycle.
 MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS = 120
+# BMS1 temperatures are sampled on the fixed 300-second slow poll. Keep three
+# poll cycles of headroom so one missed response does not make the sensors
+# unavailable between successful measurements.
+MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS = 900
 MQTT_EMS_BATTERY_CHARGED_TODAY_METER_ID = "16952321"
 MQTT_EMS_BATTERY_DISCHARGED_TODAY_METER_ID = "16953345"
 MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID = "16964609"

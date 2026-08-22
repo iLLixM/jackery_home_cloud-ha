@@ -24,6 +24,7 @@ from custom_components.jackery_home_cloud.coordinator import (
     _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS,
     _MQTT_FRESHNESS_GATED_ENERGY_KEYS,
     _MQTT_FRESHNESS_GATED_POWER_KEYS,
+    _MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS,
     JackeryHomeCloudCoordinator,
     JackeryMqttSystem,
 )
@@ -31,6 +32,7 @@ from custom_components.jackery_home_cloud.const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
     AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
     AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+    MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS,
 )
 from homeassistant.util import dt as dt_util
 
@@ -59,6 +61,8 @@ EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
     "pcs_active_power_mqtt",
     "ems_other_load_power_l1_mqtt",
     "ems_on_grid_power_mqtt",
+}
+EXPECTED_FRESHNESS_GATED_SLOW_BMS1_KEYS = {
     "bms1_temperature_ambient_mqtt",
     "bms1_temperature_avg_cell_mqtt",
 }
@@ -214,6 +218,10 @@ class TestExpiredMqttOverlaysAreRemoved:
             == EXPECTED_FRESHNESS_GATED_POWER_KEYS
         )
         assert (
+            _MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS
+            == EXPECTED_FRESHNESS_GATED_SLOW_BMS1_KEYS
+        )
+        assert (
             _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS
             == EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS
         )
@@ -236,6 +244,65 @@ class TestExpiredMqttOverlaysAreRemoved:
             "work_mode_raw": "02",
             "mqtt_live": {
                 key: {"value": 42.0, "source": "mqtt", "age_seconds": 0.0},
+                "work_mode_raw": {"value": "02", "source": "mqtt"},
+            },
+        }
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
+
+        assert key not in merged
+        assert key not in merged["mqtt_live"]
+        assert merged["work_mode_raw"] == "02"
+        assert merged["mqtt_live"]["work_mode_raw"]["value"] == "02"
+
+    @pytest.mark.parametrize(
+        "key", sorted(EXPECTED_FRESHNESS_GATED_SLOW_BMS1_KEYS)
+    )
+    @pytest.mark.parametrize("age_seconds", (121, 300, 600, 900))
+    @freeze_time("2026-01-01 12:00:00")
+    def test_slow_bms1_temperature_remains_fresh_through_three_poll_cycles(
+        self, key, age_seconds
+    ):
+        """Keep temperatures stable between polls and across one lost poll."""
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                key: 26.1,
+                f"{key}_at": now - timedelta(seconds=age_seconds),
+            }
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert age_seconds <= MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS
+        assert merged[key] == 26.1
+        assert merged["mqtt_live"][key] == {
+            "value": 26.1,
+            "source": "mqtt",
+        }
+
+    @pytest.mark.parametrize(
+        "key", sorted(EXPECTED_FRESHNESS_GATED_SLOW_BMS1_KEYS)
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_slow_bms1_temperature_is_removed_after_its_freshness_window(
+        self, key
+    ):
+        """Drop both the value and provenance only after 900 seconds."""
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                key: 26.1,
+                f"{key}_at": now
+                - timedelta(seconds=MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS + 1),
+                "work_mode_raw": "02",
+            }
+        )
+        bundle = {
+            key: 26.1,
+            "work_mode_raw": "02",
+            "mqtt_live": {
+                key: {"value": 26.1, "source": "mqtt"},
                 "work_mode_raw": {"value": "02", "source": "mqtt"},
             },
         }

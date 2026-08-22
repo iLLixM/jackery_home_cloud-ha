@@ -11,3 +11,6 @@ venv/
 htmlcov/
 
 .vscode/
+.mcp.json
+.idx/mcp.json
+AGENTS.md
