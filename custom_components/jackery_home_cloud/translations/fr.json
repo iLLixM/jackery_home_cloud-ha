@@ -132,20 +132,99 @@
   },
   "entity": {
     "sensor": {
-      "battery_count": {
-        "name": "Nombre de batteries"
-      },
-      "ac_main_power_heur": {
-        "name": "Puissance secteur CA HEUR"
-      },
-      "bms1_temperature_ambient": {
-        "name": "Température ambiante BMS1"
-      },
-      "bms1_temperature_avg_cell": {
-        "name": "Température moyenne des cellules BMS1"
-      },
-      "total_battery_capacity": {
-        "name": "Capacité totale de la batterie"
+      "total_charge_amount": {"name": "Énergie totale chargée"},
+      "co2_saved": {"name": "CO₂ économisé"},
+      "grid_power": {"name": "Puissance réseau"},
+      "ac_main_power": {"name": "Puissance secteur CA"},
+      "ac_main_power_heur": {"name": "Puissance secteur CA HEUR"},
+      "pcs_active_power_l1": {"name": "Puissance active PCS L1"},
+      "pcs_apparent_power": {"name": "Puissance apparente PCS"},
+      "pcs_active_power": {"name": "Puissance active PCS"},
+      "ems_other_load_power_l1": {"name": "Puissance des autres charges EMS L1"},
+      "ems_on_grid_power": {"name": "Puissance réseau EMS"},
+      "battery_soc": {"name": "État de charge de la batterie"},
+      "battery_power": {"name": "Puissance de la batterie"},
+      "battery_power_bms1": {"name": "Puissance batterie BMS1"},
+      "bms1_temperature_ambient": {"name": "Température ambiante BMS1"},
+      "bms1_temperature_avg_cell": {"name": "Température moyenne des cellules BMS1"},
+      "battery_energy_remaining": {"name": "Énergie restante de la batterie"},
+      "pv_power": {"name": "Puissance PV"},
+      "eps_load_power": {"name": "Puissance de sortie CA"},
+      "eps_load_power_inverted": {"name": "Puissance de sortie CA inversée"},
+      "other_load_power": {"name": "Puissance d’alimentation du domicile"},
+      "solar_energy_generated_today": {"name": "Énergie solaire produite aujourd’hui"},
+      "battery_energy_charged_today": {"name": "Énergie chargée dans la batterie aujourd’hui"},
+      "battery_energy_discharged_today": {"name": "Énergie déchargée de la batterie aujourd’hui"},
+      "battery_energy_charged_total": {"name": "Énergie totale chargée dans la batterie"},
+      "battery_energy_discharged_total": {"name": "Énergie totale déchargée de la batterie"},
+      "ac_output_energy_in": {"name": "Énergie injectée via la sortie CA"},
+      "ac_output_energy_out": {"name": "Énergie fournie par la sortie CA"},
+      "grid_energy_exported_today": {"name": "Énergie injectée au réseau aujourd’hui"},
+      "grid_energy_imported_today": {"name": "Énergie prélevée du réseau aujourd’hui"},
+      "pv1_energy_today": {"name": "Énergie PV1 aujourd’hui"},
+      "pv2_energy_today": {"name": "Énergie PV2 aujourd’hui"},
+      "pv1_energy_total": {"name": "Énergie PV1 totale"},
+      "pv2_energy_total": {"name": "Énergie PV2 totale"},
+      "pv_energy_total": {"name": "Énergie PV totale"},
+      "on_grid_energy_exported_today": {"name": "Énergie on-grid injectée aujourd’hui"},
+      "battery_count": {"name": "Nombre de batteries"},
+      "total_battery_capacity": {"name": "Capacité totale de la batterie"},
+      "device_connection": {"name": "Connexion de l’appareil"},
+      "mqtt_connection_status": {"name": "État de la connexion MQTT"},
+      "mqtt_message_count": {"name": "Nombre de messages MQTT"},
+      "mqtt_last_topic": {"name": "Dernier topic MQTT"},
+      "mqtt_last_message_at": {"name": "Date du dernier message MQTT"},
+      "charge_discharge_schedule": {"name": "Programme de charge/décharge"}
+    },
+    "switch": {
+      "ac_output": {"name": "Sortie CA"},
+      "standby": {"name": "Veille"},
+      "auto_standby": {"name": "Veille automatique"}
+    },
+    "select": {
+      "work_mode": {"name": "Mode de fonctionnement"},
+      "output_power_limit": {"name": "Limite de puissance de sortie réseau"}
+    },
+    "number": {
+      "discharge_limit_soc": {"name": "Limite de décharge"},
+      "charge_limit_soc": {"name": "Limite de charge"},
+      "feed_power_limit": {"name": "Limite de puissance d’injection"}
+    },
+    "button": {
+      "reboot_device": {"name": "Redémarrer l’appareil"}
+    }
+  },
+  "services": {
+    "set_charge_window": {
+      "name": "Définir une plage de charge",
+      "description": "Configure l’une des 10 plages de charge au maximum. Ne s’applique qu’en mode d’utilisation selon l’heure.",
+      "fields": {
+        "slot": {"name": "Plage", "description": "Plage de charge à configurer (0-9)."},
+        "start": {"name": "Heure de début", "description": "Début au format 24 heures HH:MM ; les secondes sont ignorées."},
+        "end": {"name": "Heure de fin", "description": "Fin au format 24 heures HH:MM ; les secondes sont ignorées et le programme se répète quotidiennement."}
+      }
+    },
+    "set_discharge_window": {
+      "name": "Définir une plage de décharge",
+      "description": "Configure l’une des 10 plages de décharge au maximum. Ne s’applique qu’en mode d’utilisation selon l’heure.",
+      "fields": {
+        "slot": {"name": "Plage", "description": "Plage de décharge à configurer (0-9)."},
+        "start": {"name": "Heure de début", "description": "Début au format 24 heures HH:MM ; les secondes sont ignorées."},
+        "end": {"name": "Heure de fin", "description": "Fin au format 24 heures HH:MM ; les secondes sont ignorées et le programme se répète quotidiennement."}
+      }
+    },
+    "clear_charge_window": {
+      "name": "Effacer une plage de charge",
+      "description": "Supprime l’une des plages de charge programmées.",
+      "fields": {
+        "slot": {"name": "Plage", "description": "Plage de charge à effacer (0-9)."}
+      }
+    },
+    "clear_discharge_window": {
+      "name": "Effacer une plage de décharge",
+      "description": "Supprime l’une des plages de décharge programmées.",
+      "fields": {
+        "slot": {"name": "Plage", "description": "Plage de décharge à effacer (0-9)."}
       }
     }
   }

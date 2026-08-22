@@ -110,7 +110,7 @@ class JackeryWorkModeSelect(CoordinatorEntity[JackeryHomeCloudCoordinator], Sele
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Work mode"
+    _attr_translation_key = "work_mode"
     _attr_icon = "mdi:battery-sync"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = list(MODE_OPTIONS.keys())
@@ -219,7 +219,7 @@ class JackeryOutputPowerLimitSelect(CoordinatorEntity[JackeryHomeCloudCoordinato
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Grid output power limit"
+    _attr_translation_key = "output_power_limit"
     _attr_icon = "mdi:transmission-tower-export"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = list(OUTPUT_POWER_LIMIT_OPTIONS.keys())

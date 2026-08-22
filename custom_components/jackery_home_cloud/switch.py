@@ -100,7 +100,7 @@ class JackeryAcOutputSwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Swit
     """MQTT-backed switch for the Jackery AC output state."""
 
     _attr_has_entity_name = True
-    _attr_name = "AC Output"
+    _attr_translation_key = "ac_output"
     _attr_icon = "mdi:power-plug"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -234,7 +234,7 @@ class JackeryStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], Switc
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Standby"
+    _attr_translation_key = "standby"
     _attr_icon = "mdi:sleep"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -354,7 +354,7 @@ class JackeryAutoStandbySwitch(CoordinatorEntity[JackeryHomeCloudCoordinator], S
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Auto standby"
+    _attr_translation_key = "auto_standby"
     _attr_icon = "mdi:sleep-off"
     _attr_entity_category = EntityCategory.CONFIG
 
