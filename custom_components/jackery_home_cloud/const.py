@@ -110,9 +110,10 @@ MQTT_EMS_BATTERY_SOC_SCALE = 10.0
 MQTT_PCS_PV1_POWER_METER_ID = "50490369"
 MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 
-# Experimental PCS power meters identified from observed MQTT PROPERTY_MAP
-# data. Their raw values and signs are intentionally exposed unchanged while
-# their relationship to AC Main is validated against real hardware.
+# PCS power meters identified from observed MQTT PROPERTY_MAP data. Their raw
+# values and signs remain exposed unchanged for field validation. Active power
+# L1 is additionally used as the preferred AC-main sign indicator outside the
+# empirical deadband declared below.
 # PROPERTY_MAPPING "50397185":"HB-PCS-MODEL_activePL1"
 MQTT_PCS_ACTIVE_POWER_L1_METER_ID: str = "50397185"
 # PROPERTY_MAPPING "50393089":"HB-PCS-MODEL_apparentPower"
@@ -124,17 +125,17 @@ MQTT_PCS_ACTIVE_POWER_METER_ID: str = "50394113"
 # battery charge/discharge) - distinct from MQTT_EMS_EPS_LOAD_POWER_METER_ID
 # (AC output socket power) and MQTT_EMS_OTHER_LOAD_POWER_METER_ID (household
 # load, which only matches this value when grid_power is ~0). The raw meter
-# is UNSIGNED; the signed "ac_main_power_mqtt" bundle value is derived in
-# coordinator.py from battery_power_mqtt's sign (REST ac_main_power's sign is
-# always the opposite of MQTT_BMS1_BATTERY_POWER_METER_ID's). Do not assume
-# this raw meter is signed if reading it directly elsewhere.
+# is UNSIGNED; coordinator.py combines its absolute magnitude with the sign of
+# MQTT_PCS_ACTIVE_POWER_L1_METER_ID when that sample is sufficiently clear and
+# contemporaneous. The existing PV/battery/EPS heuristic remains the fallback.
+# Do not assume this raw meter is signed if reading it directly elsewhere.
 # Candidate, unconfirmed: the meter ID -> field mapping itself is not backed
 # by a PROPERTY_MAP entry, only by observed traffic. See CONTRIBUTING.md's
 # MQTT-vs-REST / AC main power sign validation checklist before removing
 # this hedge.
-# Confirmed via live validation on 2026-08-09: the sign derivation above
-# (math.copysign(ac_main_magnitude, -battery_power_signed)) produced the
-# physically correct sign during both a user-triggered forced charge
+# Confirmed via live validation on 2026-08-09: the battery-based heuristic
+# fallback (math.copysign(ac_main_magnitude, -battery_power_signed)) produced
+# the physically correct sign during both a user-triggered forced charge
 # (negative) and a user-triggered discharge (positive), cross-checked
 # against the battery_soc trend and an exact grid_power match with REST at
 # the same moment. The magnitude/scale of this raw meter is still NOT
@@ -142,6 +143,12 @@ MQTT_PCS_ACTIVE_POWER_METER_ID: str = "50394113"
 # fast ground truth for that comparison (see the cloud-side lag note on
 # MQTT_EMS_OTHER_LOAD_POWER_METER_ID below).
 MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
+
+# Empirical zero-crossing/noise region for the signed PCS active-power-L1
+# meter when it is used to select the AC-main direction. Values exactly at the
+# boundary remain ambiguous and use the existing heuristic fallback.
+AC_MAIN_L1_SIGN_DEADBAND_W: float = 20.0
+
 # Experimental threshold used only for AC Main sign reconstruction.
 #
 # Real-world observations indicate that Jackery internal consumption

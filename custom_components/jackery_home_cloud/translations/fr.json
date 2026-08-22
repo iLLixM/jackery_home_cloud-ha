@@ -135,6 +135,9 @@
       "battery_count": {
         "name": "Nombre de batteries"
       },
+      "ac_main_power_heur": {
+        "name": "Puissance secteur CA HEUR"
+      },
       "bms1_temperature_ambient": {
         "name": "Température ambiante BMS1"
       },

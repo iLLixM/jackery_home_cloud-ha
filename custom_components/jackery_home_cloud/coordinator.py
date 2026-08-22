@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from .api.client import JackeryApiClient
 from .const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
+    AC_MAIN_L1_SIGN_DEADBAND_W,
     AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
     AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
     CONF_ACCOUNT,
@@ -121,6 +122,7 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "grid_power_mqtt",
         "eps_load_power_mqtt",
         "ac_main_power_mqtt",
+        "ac_main_power_heur_mqtt",
         "pcs_active_power_l1_mqtt",
         "pcs_apparent_power_mqtt",
         "pcs_active_power_mqtt",
@@ -2532,7 +2534,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # The absolute AC Main power value always remains the MQTT-derived
         # ac_main_magnitude and is never recalculated from PV/battery/EPS values.
         #
-        # Sign decision priority:
+        # First calculate the complete legacy heuristic result using this
+        # decision priority. A contemporaneous PCS active-power-L1 sample
+        # outside its deadband may replace only that result's sign afterwards.
+        #
+        # Heuristic sign decision priority:
         #
         # 1. Complete PV + battery + EPS data:
         #    - detect a low-power / idle condition
@@ -2933,12 +2939,12 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # AC Main power magnitude.
             # ------------------------------------------------------------------
             if sign_indicator is not None and sign_indicator != 0:
-                ac_main_power_signed = math.copysign(
+                ac_main_power_heur_signed = math.copysign(
                     ac_main_magnitude_abs,
                     sign_indicator,
                 )
             else:
-                ac_main_power_signed = ac_main_magnitude_abs
+                ac_main_power_heur_signed = ac_main_magnitude_abs
 
                 _LOGGER.debug(
                     "AC main unsigned fallback for system %s: "
@@ -2962,21 +2968,19 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "AC main result for system %s: "
                 "raw_magnitude=%s, balance_candidate=%s, "
                 "balance_delta=%s, sign_indicator=%s, "
-                "sign_source=%s, final_value=%s",
+                "sign_source=%s, heuristic_value=%s",
                 system_id,
                 ac_main_magnitude_abs,
                 balance_candidate,
                 balance_delta,
                 sign_indicator,
                 sign_source,
-                ac_main_power_signed,
+                ac_main_power_heur_signed,
             )
 
-            merged["ac_main_power_mqtt"] = ac_main_power_signed
-
-            mqtt_live["ac_main_power_mqtt"] = {
-                "value": ac_main_power_signed,
-                "source": "mqtt",
+            heuristic_metadata = {
+                "value": ac_main_power_heur_signed,
+                "source": "mqtt_heuristic",
                 "raw_magnitude": ac_main_magnitude,
                 "balance_candidate": balance_candidate,
                 "balance_delta": balance_delta,
@@ -2990,6 +2994,85 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "battery": battery_power_skew_seconds,
                     "eps": eps_load_power_skew_seconds,
                 },
+            }
+            merged["ac_main_power_heur_mqtt"] = ac_main_power_heur_signed
+            mqtt_live["ac_main_power_heur_mqtt"] = heuristic_metadata
+
+            # Prefer the signed PCS active-power-L1 sample only when it is
+            # fresh, contemporaneous with the AC-main magnitude and clearly
+            # outside its observed zero-crossing noise region. Otherwise the
+            # preserved heuristic result remains the production value.
+            l1_value = _coerce_float(live.get("pcs_active_power_l1_mqtt"))
+            l1_timestamp = live.get("pcs_active_power_l1_mqtt_at")
+            l1_age_seconds = (
+                (now - l1_timestamp).total_seconds()
+                if l1_timestamp is not None
+                else None
+            )
+            l1_skew_seconds = _sample_skew_seconds(
+                ac_main_timestamp,
+                l1_timestamp,
+            )
+
+            if l1_value is None or l1_timestamp is None:
+                ac_main_power_signed = ac_main_power_heur_signed
+                final_sign_source = (
+                    "pcs_active_power_l1_missing_heuristic_fallback"
+                )
+            elif (
+                l1_age_seconds is None
+                or l1_age_seconds > MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
+            ):
+                ac_main_power_signed = ac_main_power_heur_signed
+                final_sign_source = (
+                    "pcs_active_power_l1_stale_heuristic_fallback"
+                )
+            elif not _sample_is_contemporaneous(l1_skew_seconds):
+                ac_main_power_signed = ac_main_power_heur_signed
+                final_sign_source = (
+                    "pcs_active_power_l1_skew_heuristic_fallback"
+                )
+            elif l1_value > AC_MAIN_L1_SIGN_DEADBAND_W:
+                ac_main_power_signed = ac_main_magnitude_abs
+                final_sign_source = "pcs_active_power_l1_positive"
+            elif l1_value < -AC_MAIN_L1_SIGN_DEADBAND_W:
+                ac_main_power_signed = -ac_main_magnitude_abs
+                final_sign_source = "pcs_active_power_l1_negative"
+            else:
+                ac_main_power_signed = ac_main_power_heur_signed
+                final_sign_source = (
+                    "pcs_active_power_l1_deadband_heuristic_fallback"
+                )
+
+            _LOGGER.debug(
+                "AC main L1 sign selection for system %s: "
+                "raw_magnitude=%s, l1=%s, l1_age=%s, l1_skew=%s, "
+                "deadband=%s, heuristic_value=%s, "
+                "heuristic_source=%s, final_source=%s, final_value=%s",
+                system_id,
+                ac_main_magnitude_abs,
+                l1_value,
+                l1_age_seconds,
+                l1_skew_seconds,
+                AC_MAIN_L1_SIGN_DEADBAND_W,
+                ac_main_power_heur_signed,
+                sign_source,
+                final_sign_source,
+                ac_main_power_signed,
+            )
+
+            merged["ac_main_power_mqtt"] = ac_main_power_signed
+            mqtt_live["ac_main_power_mqtt"] = {
+                "value": ac_main_power_signed,
+                "source": "mqtt",
+                "raw_magnitude": ac_main_magnitude,
+                "sign_source": final_sign_source,
+                "pcs_active_power_l1": l1_value,
+                "pcs_active_power_l1_age_seconds": l1_age_seconds,
+                "pcs_active_power_l1_skew_seconds": l1_skew_seconds,
+                "pcs_active_power_l1_deadband_w": AC_MAIN_L1_SIGN_DEADBAND_W,
+                "heuristic_value": ac_main_power_heur_signed,
+                "heuristic_sign_source": sign_source,
             }
 
         else:

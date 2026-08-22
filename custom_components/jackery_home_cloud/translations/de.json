@@ -144,6 +144,9 @@
       "eps_load_power_inverted": {
         "name": "AC-Ausgang Leistung invertiert"
       },
+      "ac_main_power_heur": {
+        "name": "AC-Netzleistung HEUR"
+      },
       "pcs_active_power_l1": {
         "name": "PCS-Wirkleistung L1"
       },

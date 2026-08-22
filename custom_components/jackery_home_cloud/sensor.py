@@ -125,10 +125,23 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
-    # Experimental raw MQTT meters used to validate possible alternatives or
-    # supplements to the heuristic AC-main direction. Keep them diagnostic,
-    # disabled by default and independent from the heuristic until their
-    # physical boundaries and sign conventions are confirmed in the field.
+    JackeryMetricDescription(
+        key="ac_main_power_heur",
+        translation_key="ac_main_power_heur",
+        name="AC main power HEUR",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("ac_main_power_heur_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    # Raw MQTT meters retained for comparison with the production L1-assisted
+    # AC-main result and its separate heuristic-only diagnostic value.
     JackeryMetricDescription(
         key="pcs_active_power_l1",
         translation_key="pcs_active_power_l1",

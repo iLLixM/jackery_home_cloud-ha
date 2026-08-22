@@ -30,6 +30,7 @@ from custom_components.jackery_home_cloud.coordinator import (
 )
 from custom_components.jackery_home_cloud.const import (
     AC_MAIN_IDLE_POWER_THRESHOLD_W,
+    AC_MAIN_L1_SIGN_DEADBAND_W,
     AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
     AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
     MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS,
@@ -56,6 +57,7 @@ EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
     "grid_power_mqtt",
     "eps_load_power_mqtt",
     "ac_main_power_mqtt",
+    "ac_main_power_heur_mqtt",
     "pcs_active_power_l1_mqtt",
     "pcs_apparent_power_mqtt",
     "pcs_active_power_mqtt",
@@ -87,6 +89,7 @@ def _ac_main_live_values(
     pv2: float | None = None,
     battery: float | None = None,
     eps: float | None = None,
+    l1: float | None = None,
     stale: frozenset[str] = frozenset(),
     skew_seconds: dict[str, float] | None = None,
 ) -> dict:
@@ -101,6 +104,7 @@ def _ac_main_live_values(
         "pv2_power_mqtt": pv2,
         "battery_power_mqtt": battery,
         "eps_load_power_mqtt": eps,
+        "pcs_active_power_l1_mqtt": l1,
     }
     for key, value in inputs.items():
         if value is None:
@@ -652,8 +656,22 @@ class TestAcMainPowerSignDerivation:
             "ac_main_power_mqtt_at": stale_timestamp,
         }
         coordinator = _make_coordinator(live)
-        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+        bundle = {
+            "ac_main_power_mqtt": 1469.0,
+            "ac_main_power_heur_mqtt": -1469.0,
+            "mqtt_live": {
+                "ac_main_power_mqtt": {"value": 1469.0, "source": "mqtt"},
+                "ac_main_power_heur_mqtt": {
+                    "value": -1469.0,
+                    "source": "mqtt_heuristic",
+                },
+            },
+        }
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, bundle)
         assert "ac_main_power_mqtt" not in merged
+        assert "ac_main_power_heur_mqtt" not in merged
+        assert "ac_main_power_mqtt" not in merged["mqtt_live"]
+        assert "ac_main_power_heur_mqtt" not in merged["mqtt_live"]
 
     @freeze_time("2026-01-01 12:00:00")
     def test_ac_main_freshness_boundary_is_inclusive(self):
@@ -955,7 +973,7 @@ class TestAcMainPowerDecisionMatrix:
         # Balance inputs may select only the sign; they must never replace the
         # raw meter's magnitude, even if their numerical difference is large.
         assert abs(merged["ac_main_power_mqtt"]) == abs(raw_magnitude)
-        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        metadata = merged["mqtt_live"]["ac_main_power_heur_mqtt"]
         stale = inputs.get("stale", frozenset())
         skew_overrides = inputs.get("skew_seconds", {})
         sample_skew_seconds = {
@@ -977,7 +995,7 @@ class TestAcMainPowerDecisionMatrix:
         }
         assert metadata == {
             "value": expected_value,
-            "source": "mqtt",
+            "source": "mqtt_heuristic",
             "raw_magnitude": raw_magnitude,
             "balance_candidate": expected_candidate,
             "balance_delta": expected_delta,
@@ -987,6 +1005,205 @@ class TestAcMainPowerDecisionMatrix:
             "sample_max_skew_seconds": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
             "sample_skew_seconds": sample_skew_seconds,
         }
+
+
+class TestAcMainPowerL1SignSelection:
+    """Use clear, contemporaneous L1 samples without changing magnitude."""
+
+    @pytest.mark.parametrize(
+        (
+            "battery",
+            "l1",
+            "expected_main",
+            "expected_heur",
+            "expected_source",
+        ),
+        (
+            pytest.param(
+                100.0,
+                AC_MAIN_L1_SIGN_DEADBAND_W + 0.001,
+                125.0,
+                -125.0,
+                "pcs_active_power_l1_positive",
+                id="clear-positive-l1-overrides-negative-heuristic",
+            ),
+            pytest.param(
+                -100.0,
+                -(AC_MAIN_L1_SIGN_DEADBAND_W + 0.001),
+                -125.0,
+                125.0,
+                "pcs_active_power_l1_negative",
+                id="clear-negative-l1-overrides-positive-heuristic",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_clear_l1_sign_overrides_heuristic_but_not_raw_magnitude(
+        self,
+        battery,
+        l1,
+        expected_main,
+        expected_heur,
+        expected_source,
+    ):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=-125.0,
+                battery=battery,
+                l1=l1,
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == expected_main
+        assert merged["ac_main_power_heur_mqtt"] == expected_heur
+        assert abs(merged["ac_main_power_mqtt"]) == 125.0
+        # The raw validation sensor keeps the native signed L1 measurement.
+        assert merged["pcs_active_power_l1_mqtt"] == l1
+        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        assert metadata["sign_source"] == expected_source
+        assert metadata["pcs_active_power_l1"] == l1
+        assert metadata["heuristic_value"] == expected_heur
+
+    @pytest.mark.parametrize(
+        ("l1", "battery", "expected_value"),
+        (
+            pytest.param(
+                AC_MAIN_L1_SIGN_DEADBAND_W,
+                100.0,
+                -80.0,
+                id="positive-boundary",
+            ),
+            pytest.param(
+                -AC_MAIN_L1_SIGN_DEADBAND_W,
+                -100.0,
+                80.0,
+                id="negative-boundary",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_deadband_boundaries_use_heuristic(self, l1, battery, expected_value):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=80.0,
+                battery=battery,
+                l1=l1,
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == expected_value
+        assert merged["ac_main_power_heur_mqtt"] == expected_value
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "pcs_active_power_l1_deadband_heuristic_fallback"
+        )
+
+    @pytest.mark.parametrize(
+        ("l1", "stale", "skew_seconds", "expected_source"),
+        (
+            pytest.param(
+                None,
+                frozenset(),
+                {},
+                "pcs_active_power_l1_missing_heuristic_fallback",
+                id="missing",
+            ),
+            pytest.param(
+                50.0,
+                frozenset({"pcs_active_power_l1_mqtt"}),
+                {},
+                "pcs_active_power_l1_stale_heuristic_fallback",
+                id="stale",
+            ),
+            pytest.param(
+                50.0,
+                frozenset(),
+                {
+                    "pcs_active_power_l1_mqtt": (
+                        AC_MAIN_SAMPLE_MAX_SKEW_SECONDS + 0.001
+                    )
+                },
+                "pcs_active_power_l1_skew_heuristic_fallback",
+                id="non-contemporaneous",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_unusable_l1_uses_heuristic(
+        self, l1, stale, skew_seconds, expected_source
+    ):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=100.0,
+                battery=100.0,
+                l1=l1,
+                stale=stale,
+                skew_seconds=skew_seconds,
+            )
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == -100.0
+        assert merged["ac_main_power_heur_mqtt"] == -100.0
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == expected_source
+        )
+
+    @pytest.mark.parametrize(
+        "sample_age_or_skew",
+        (
+            pytest.param(120.0, id="freshness-boundary"),
+            pytest.param(
+                AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
+                id="sample-skew-boundary",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_l1_freshness_and_skew_boundaries_are_inclusive(
+        self, sample_age_or_skew
+    ):
+        now = dt_util.utcnow()
+        if sample_age_or_skew == 120.0:
+            sample_time = now - timedelta(seconds=sample_age_or_skew)
+            live = _ac_main_live_values(
+                sample_time,
+                ac_main=90.0,
+                battery=100.0,
+                l1=50.0,
+            )
+        else:
+            live = _ac_main_live_values(
+                now,
+                ac_main=90.0,
+                battery=100.0,
+                l1=50.0,
+                skew_seconds={
+                    "pcs_active_power_l1_mqtt": sample_age_or_skew
+                },
+            )
+        coordinator = _make_coordinator(live)
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == 90.0
+        assert merged["ac_main_power_heur_mqtt"] == -90.0
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "pcs_active_power_l1_positive"
+        )
 
 
 class TestAcMainPowerSampleCoherence:
@@ -1036,7 +1253,7 @@ class TestAcMainPowerSampleCoherence:
             if skew_seconds <= AC_MAIN_SAMPLE_MAX_SKEW_SECONDS
             else -363.0
         )
-        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        metadata = merged["mqtt_live"]["ac_main_power_heur_mqtt"]
         assert metadata["sign_source"] == expected_source
         assert metadata["sample_skew_seconds"]["eps"] == skew_seconds
         assert (
@@ -1068,7 +1285,7 @@ class TestAcMainPowerSampleCoherence:
         assert merged["pv_power_mqtt"] == 1000.0
         assert merged["ac_main_power_mqtt"] == 120.0
         assert (
-            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            merged["mqtt_live"]["ac_main_power_heur_mqtt"]["sign_source"]
             == "battery_eps_minimum_balance_positive"
         )
 
@@ -1092,7 +1309,7 @@ class TestAcMainPowerSampleCoherence:
         assert merged["battery_power_mqtt"] == 234.0
         assert merged["ac_main_power_mqtt"] == 363.0
         assert (
-            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            merged["mqtt_live"]["ac_main_power_heur_mqtt"]["sign_source"]
             == "unsigned_fallback"
         )
 
@@ -1122,7 +1339,7 @@ class TestAcMainPowerStandbyStability:
         merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
 
         assert merged["ac_main_power_mqtt"] == -16.0
-        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        metadata = merged["mqtt_live"]["ac_main_power_heur_mqtt"]
         assert metadata["sign_indicator"] == -1.0
         assert (
             metadata["sign_source"]
@@ -1171,7 +1388,7 @@ class TestAcMainPowerStandbyStability:
         assert pcs_first["ac_main_power_mqtt"] == -16.0
         assert completed_poll["ac_main_power_mqtt"] == -16.0
         assert (
-            pcs_first["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            pcs_first["mqtt_live"]["ac_main_power_heur_mqtt"]["sign_source"]
             == "internal_consumption_idle_fresh_fallback"
         )
 
@@ -1199,7 +1416,7 @@ class TestAcMainPowerStandbyStability:
 
         assert merged["ac_main_power_mqtt"] == -AC_MAIN_IDLE_POWER_THRESHOLD_W
         assert (
-            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            merged["mqtt_live"]["ac_main_power_heur_mqtt"]["sign_source"]
             == "internal_consumption_idle_fresh_fallback"
         )
 
@@ -1240,7 +1457,7 @@ class TestAcMainPowerStandbyStability:
 
         assert merged["ac_main_power_mqtt"] == abs(inputs["ac_main"])
         assert (
-            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            merged["mqtt_live"]["ac_main_power_heur_mqtt"]["sign_source"]
             == "unsigned_fallback"
         )
 
@@ -1278,7 +1495,7 @@ class TestAcMainPowerStandbyStability:
 
         assert merged["ac_main_power_mqtt"] == 16.0
         assert (
-            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            merged["mqtt_live"]["ac_main_power_heur_mqtt"]["sign_source"]
             == "unsigned_fallback"
         )
 

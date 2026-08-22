@@ -144,6 +144,9 @@
       "eps_load_power_inverted": {
         "name": "AC-socket power inverted"
       },
+      "ac_main_power_heur": {
+        "name": "AC main power HEUR"
+      },
       "pcs_active_power_l1": {
         "name": "PCS active power L1"
       },
