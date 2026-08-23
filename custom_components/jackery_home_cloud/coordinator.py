@@ -301,6 +301,12 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_error_at": None,
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
+        # Last direction clearly established by a fresh, contemporaneous PCS
+        # active-power-L1 sample outside its deadband. This transient state is
+        # deliberately bounded: weak L1 samples retain it only while they stay
+        # non-zero and same-signed; unusable or contradictory telemetry clears
+        # it. It is never persisted beyond the coordinator instance lifetime.
+        self._ac_main_l1_direction: dict[str, int] = {}
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
         # Per-system wake signal for async_set_meter_value()'s event-driven
         # verification wait (discussion #6, item 6, "Event-driven write
@@ -2224,6 +2230,68 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return _system_local_day_key(monitor)
         return dt_util.utcnow().strftime(TREND_DATE_FORMAT)
 
+    def _select_ac_main_l1_sign(
+        self,
+        system_id: str,
+        *,
+        ac_main_magnitude_abs: float,
+        heuristic_value: float,
+        l1_value: float | None,
+        l1_age_seconds: float | None,
+        l1_skew_seconds: float | None,
+    ) -> tuple[float, str]:
+        """Select the AC-main sign using bounded per-system L1 direction state."""
+        if l1_value is None or l1_age_seconds is None:
+            self._ac_main_l1_direction.pop(system_id, None)
+            return (
+                heuristic_value,
+                "pcs_active_power_l1_missing_heuristic_fallback",
+            )
+
+        if l1_age_seconds > MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS:
+            self._ac_main_l1_direction.pop(system_id, None)
+            return (
+                heuristic_value,
+                "pcs_active_power_l1_stale_heuristic_fallback",
+            )
+
+        if not _sample_is_contemporaneous(l1_skew_seconds):
+            self._ac_main_l1_direction.pop(system_id, None)
+            return (
+                heuristic_value,
+                "pcs_active_power_l1_skew_heuristic_fallback",
+            )
+
+        if l1_value > AC_MAIN_L1_SIGN_DEADBAND_W:
+            self._ac_main_l1_direction[system_id] = 1
+            return ac_main_magnitude_abs, "pcs_active_power_l1_positive"
+
+        if l1_value < -AC_MAIN_L1_SIGN_DEADBAND_W:
+            self._ac_main_l1_direction[system_id] = -1
+            return -ac_main_magnitude_abs, "pcs_active_power_l1_negative"
+
+        remembered_direction = self._ac_main_l1_direction.get(system_id)
+        l1_direction = 1 if l1_value > 0 else -1 if l1_value < 0 else 0
+        if remembered_direction is not None and l1_direction == remembered_direction:
+            held_source = (
+                "pcs_active_power_l1_deadband_held_positive"
+                if remembered_direction > 0
+                else "pcs_active_power_l1_deadband_held_negative"
+            )
+            return (
+                math.copysign(ac_main_magnitude_abs, remembered_direction),
+                held_source,
+            )
+
+        # Exact zero, an opposite weak sign or the absence of a previously
+        # confirmed direction returns control to the unchanged heuristic. A
+        # contradictory sample also prevents the old direction resurfacing.
+        self._ac_main_l1_direction.pop(system_id, None)
+        return (
+            heuristic_value,
+            "pcs_active_power_l1_deadband_heuristic_fallback",
+        )
+
     def _apply_mqtt_live_values_to_bundle(
         self,
         system_id: str,
@@ -2233,6 +2301,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         merged = dict(bundle)
         live = self._mqtt_live_values.get(system_id)
         if not isinstance(live, Mapping):
+            self._ac_main_l1_direction.pop(system_id, None)
             return merged
 
         now = dt_util.utcnow()
@@ -2998,10 +3067,11 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             merged["ac_main_power_heur_mqtt"] = ac_main_power_heur_signed
             mqtt_live["ac_main_power_heur_mqtt"] = heuristic_metadata
 
-            # Prefer the signed PCS active-power-L1 sample only when it is
-            # fresh, contemporaneous with the AC-main magnitude and clearly
-            # outside its observed zero-crossing noise region. Otherwise the
-            # preserved heuristic result remains the production value.
+            # Prefer the signed PCS active-power-L1 sample when it is fresh and
+            # contemporaneous. A clear sample outside the deadband establishes
+            # bounded per-system direction state; a same-signed non-zero sample
+            # inside the deadband may retain it. The preserved heuristic remains
+            # the fallback whenever L1 is unusable or contradicts that state.
             l1_value = _coerce_float(live.get("pcs_active_power_l1_mqtt"))
             l1_timestamp = live.get("pcs_active_power_l1_mqtt_at")
             l1_age_seconds = (
@@ -3014,41 +3084,23 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 l1_timestamp,
             )
 
-            if l1_value is None or l1_timestamp is None:
-                ac_main_power_signed = ac_main_power_heur_signed
-                final_sign_source = (
-                    "pcs_active_power_l1_missing_heuristic_fallback"
-                )
-            elif (
-                l1_age_seconds is None
-                or l1_age_seconds > MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
-            ):
-                ac_main_power_signed = ac_main_power_heur_signed
-                final_sign_source = (
-                    "pcs_active_power_l1_stale_heuristic_fallback"
-                )
-            elif not _sample_is_contemporaneous(l1_skew_seconds):
-                ac_main_power_signed = ac_main_power_heur_signed
-                final_sign_source = (
-                    "pcs_active_power_l1_skew_heuristic_fallback"
-                )
-            elif l1_value > AC_MAIN_L1_SIGN_DEADBAND_W:
-                ac_main_power_signed = ac_main_magnitude_abs
-                final_sign_source = "pcs_active_power_l1_positive"
-            elif l1_value < -AC_MAIN_L1_SIGN_DEADBAND_W:
-                ac_main_power_signed = -ac_main_magnitude_abs
-                final_sign_source = "pcs_active_power_l1_negative"
-            else:
-                ac_main_power_signed = ac_main_power_heur_signed
-                final_sign_source = (
-                    "pcs_active_power_l1_deadband_heuristic_fallback"
-                )
+            remembered_direction_before = self._ac_main_l1_direction.get(system_id)
+            ac_main_power_signed, final_sign_source = self._select_ac_main_l1_sign(
+                system_id,
+                ac_main_magnitude_abs=ac_main_magnitude_abs,
+                heuristic_value=ac_main_power_heur_signed,
+                l1_value=l1_value if l1_timestamp is not None else None,
+                l1_age_seconds=l1_age_seconds,
+                l1_skew_seconds=l1_skew_seconds,
+            )
+            remembered_direction_after = self._ac_main_l1_direction.get(system_id)
 
             _LOGGER.debug(
                 "AC main L1 sign selection for system %s: "
                 "raw_magnitude=%s, l1=%s, l1_age=%s, l1_skew=%s, "
                 "deadband=%s, heuristic_value=%s, "
-                "heuristic_source=%s, final_source=%s, final_value=%s",
+                "heuristic_source=%s, remembered_before=%s, "
+                "remembered_after=%s, final_source=%s, final_value=%s",
                 system_id,
                 ac_main_magnitude_abs,
                 l1_value,
@@ -3057,6 +3109,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 AC_MAIN_L1_SIGN_DEADBAND_W,
                 ac_main_power_heur_signed,
                 sign_source,
+                remembered_direction_before,
+                remembered_direction_after,
                 final_sign_source,
                 ac_main_power_signed,
             )
@@ -3071,11 +3125,15 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "pcs_active_power_l1_age_seconds": l1_age_seconds,
                 "pcs_active_power_l1_skew_seconds": l1_skew_seconds,
                 "pcs_active_power_l1_deadband_w": AC_MAIN_L1_SIGN_DEADBAND_W,
+                "pcs_active_power_l1_remembered_direction": (
+                    remembered_direction_after
+                ),
                 "heuristic_value": ac_main_power_heur_signed,
                 "heuristic_sign_source": sign_source,
             }
 
         else:
+            self._ac_main_l1_direction.pop(system_id, None)
             # Distinguish stale/missing AC Main telemetry from a sign-logic issue.
             ac_main_age_seconds = (
                 (now - ac_main_timestamp).total_seconds()

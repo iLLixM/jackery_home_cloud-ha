@@ -145,8 +145,10 @@ MQTT_PCS_ACTIVE_POWER_METER_ID: str = "50394113"
 MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
 
 # Empirical zero-crossing/noise region for the signed PCS active-power-L1
-# meter when it is used to select the AC-main direction. Values exactly at the
-# boundary remain ambiguous and use the existing heuristic fallback.
+# meter. A clear sample outside +/-20 W establishes a remembered AC-main
+# direction. Fresh, contemporaneous samples inside the deadband may retain
+# that direction while their non-zero sign remains consistent with it.
+# Without a usable remembered direction, the legacy heuristic is used.
 AC_MAIN_L1_SIGN_DEADBAND_W: float = 20.0
 
 # Experimental threshold used only for AC Main sign reconstruction.

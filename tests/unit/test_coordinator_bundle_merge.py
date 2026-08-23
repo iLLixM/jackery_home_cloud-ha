@@ -78,6 +78,7 @@ def _make_coordinator(live_values: dict) -> JackeryHomeCloudCoordinator:
     """Build a coordinator instance without running __init__/HA setup."""
     coordinator = object.__new__(JackeryHomeCloudCoordinator)
     coordinator._mqtt_live_values = {SYSTEM_ID: live_values}
+    coordinator._ac_main_l1_direction = {}
     return coordinator
 
 
@@ -1203,6 +1204,230 @@ class TestAcMainPowerL1SignSelection:
         assert (
             merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
             == "pcs_active_power_l1_positive"
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_observed_positive_ramp_holds_direction_inside_deadband(self):
+        """Keep one confirmed positive transition through weak positive L1."""
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator({})
+        results = []
+        sources = []
+
+        for l1 in (15.0, 23.0, 6.0, 19.0, 8.0):
+            coordinator._mqtt_live_values[SYSTEM_ID] = _ac_main_live_values(
+                now,
+                ac_main=41.0,
+                battery=100.0,
+                l1=l1,
+            )
+            merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+            results.append(merged["ac_main_power_mqtt"])
+            sources.append(
+                merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            )
+            # The production selector must not alter the diagnostic heuristic.
+            assert merged["ac_main_power_heur_mqtt"] == -41.0
+
+        assert results == [-41.0, 41.0, 41.0, 41.0, 41.0]
+        assert sources == [
+            "pcs_active_power_l1_deadband_heuristic_fallback",
+            "pcs_active_power_l1_positive",
+            "pcs_active_power_l1_deadband_held_positive",
+            "pcs_active_power_l1_deadband_held_positive",
+            "pcs_active_power_l1_deadband_held_positive",
+        ]
+        assert coordinator._ac_main_l1_direction == {SYSTEM_ID: 1}
+        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        assert metadata["pcs_active_power_l1_remembered_direction"] == 1
+
+    @pytest.mark.parametrize("contradictory_l1", (-5.0, 0.0))
+    @freeze_time("2026-01-01 12:00:00")
+    def test_opposite_or_zero_deadband_sample_clears_positive_direction(
+        self, contradictory_l1
+    ):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=80.0,
+                battery=100.0,
+                l1=25.0,
+            )
+        )
+        coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        coordinator._mqtt_live_values[SYSTEM_ID] = _ac_main_live_values(
+            now,
+            ac_main=80.0,
+            battery=100.0,
+            l1=contradictory_l1,
+        )
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == -80.0
+        assert coordinator._ac_main_l1_direction == {}
+        metadata = merged["mqtt_live"]["ac_main_power_mqtt"]
+        assert metadata["pcs_active_power_l1_remembered_direction"] is None
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "pcs_active_power_l1_deadband_heuristic_fallback"
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_negative_direction_is_held_symmetrically_inside_deadband(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=80.0,
+                battery=-100.0,
+                l1=-25.0,
+            )
+        )
+        coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        coordinator._mqtt_live_values[SYSTEM_ID] = _ac_main_live_values(
+            now,
+            ac_main=80.0,
+            battery=-100.0,
+            l1=-5.0,
+        )
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["ac_main_power_mqtt"] == -80.0
+        assert merged["ac_main_power_heur_mqtt"] == 80.0
+        assert coordinator._ac_main_l1_direction == {SYSTEM_ID: -1}
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "pcs_active_power_l1_deadband_held_negative"
+        )
+
+    @pytest.mark.parametrize(
+        ("l1", "stale", "skew_seconds", "expected_source"),
+        (
+            pytest.param(
+                None,
+                frozenset(),
+                {},
+                "pcs_active_power_l1_missing_heuristic_fallback",
+                id="missing",
+            ),
+            pytest.param(
+                25.0,
+                frozenset({"pcs_active_power_l1_mqtt"}),
+                {},
+                "pcs_active_power_l1_stale_heuristic_fallback",
+                id="stale",
+            ),
+            pytest.param(
+                25.0,
+                frozenset(),
+                {
+                    "pcs_active_power_l1_mqtt": (
+                        AC_MAIN_SAMPLE_MAX_SKEW_SECONDS + 0.001
+                    )
+                },
+                "pcs_active_power_l1_skew_heuristic_fallback",
+                id="non-contemporaneous",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_unusable_l1_clears_state_without_resurrection(
+        self, l1, stale, skew_seconds, expected_source
+    ):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=80.0,
+                battery=100.0,
+                l1=25.0,
+            )
+        )
+        coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        coordinator._mqtt_live_values[SYSTEM_ID] = _ac_main_live_values(
+            now,
+            ac_main=80.0,
+            battery=100.0,
+            l1=l1,
+            stale=stale,
+            skew_seconds=skew_seconds,
+        )
+        fallback = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert fallback["ac_main_power_mqtt"] == -80.0
+        assert coordinator._ac_main_l1_direction == {}
+        assert (
+            fallback["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == expected_source
+        )
+
+        coordinator._mqtt_live_values[SYSTEM_ID] = _ac_main_live_values(
+            now,
+            ac_main=80.0,
+            battery=100.0,
+            l1=5.0,
+        )
+        weak_sample = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+        assert weak_sample["ac_main_power_mqtt"] == -80.0
+        assert (
+            weak_sample["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "pcs_active_power_l1_deadband_heuristic_fallback"
+        )
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_stale_ac_main_clears_remembered_direction(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=80.0,
+                battery=100.0,
+                l1=25.0,
+            )
+        )
+        coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        coordinator._mqtt_live_values[SYSTEM_ID]["ac_main_power_mqtt_at"] = (
+            now - timedelta(seconds=121)
+        )
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert "ac_main_power_mqtt" not in merged
+        assert coordinator._ac_main_l1_direction == {}
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_remembered_direction_is_isolated_per_system(self):
+        now = dt_util.utcnow()
+        other_system_id = "sys2"
+        coordinator = _make_coordinator(
+            _ac_main_live_values(
+                now,
+                ac_main=80.0,
+                battery=100.0,
+                l1=25.0,
+            )
+        )
+        coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+        coordinator._mqtt_live_values[other_system_id] = _ac_main_live_values(
+            now,
+            ac_main=80.0,
+            battery=100.0,
+            l1=5.0,
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(
+            other_system_id, {}
+        )
+
+        assert merged["ac_main_power_mqtt"] == -80.0
+        assert coordinator._ac_main_l1_direction == {SYSTEM_ID: 1}
+        assert (
+            merged["mqtt_live"]["ac_main_power_mqtt"]["sign_source"]
+            == "pcs_active_power_l1_deadband_heuristic_fallback"
         )
 
 

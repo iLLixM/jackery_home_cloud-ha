@@ -76,6 +76,7 @@ def _make_coordinator() -> JackeryHomeCloudCoordinator:
         }
     }
     coordinator._mqtt_live_values = {}
+    coordinator._ac_main_l1_direction = {}
     coordinator._mqtt_update_events = {}
     return coordinator
 
