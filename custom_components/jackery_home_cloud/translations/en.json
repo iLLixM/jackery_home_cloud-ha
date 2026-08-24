@@ -148,6 +148,8 @@
       "bms1_temperature_ambient": {"name": "BMS1 ambient temperature"},
       "bms1_temperature_avg_cell": {"name": "BMS1 average cell temperature"},
       "battery_energy_remaining": {"name": "Battery energy remaining"},
+      "pv1_power": {"name": "PV1 power"},
+      "pv2_power": {"name": "PV2 power"},
       "pv_power": {"name": "PV power"},
       "eps_load_power": {"name": "AC-socket power"},
       "eps_load_power_inverted": {"name": "AC-socket power inverted"},

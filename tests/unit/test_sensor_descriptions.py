@@ -43,6 +43,8 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "battery_power",
         "battery_power_bms1",
         "battery_energy_remaining",
+        "pv1_power",
+        "pv2_power",
         "pv_power",
         "eps_load_power",
         "eps_load_power_inverted",
@@ -91,6 +93,8 @@ SIMPLE_UNIQUE_ID_KEYS = frozenset(
         "ems_on_grid_power",
         "battery_power",
         "battery_power_bms1",
+        "pv1_power",
+        "pv2_power",
         "ac_output_energy_in",
         "ac_output_energy_out",
         "bms1_temperature_ambient",
@@ -149,6 +153,25 @@ def test_battery_power_and_bms1_are_distinct_entities():
     # Cross-reading the wrong bundle key must not accidentally match.
     assert battery_power.value_fn({"battery_power_bms1_mqtt": 456}) is None
     assert battery_power_bms1.value_fn({"battery_power_mqtt": 123}) is None
+
+
+def test_pv_input_power_sensors_are_distinct_mqtt_measurements():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    pv1 = descriptions["pv1_power"]
+    pv2 = descriptions["pv2_power"]
+
+    for description in (pv1, pv2):
+        assert description.requires_mqtt is True
+        assert description.entity_registry_enabled_default is True
+        assert description.native_unit_of_measurement == "W"
+        assert description.device_class == "power"
+        assert description.state_class == "measurement"
+        assert description.entity_category is None
+
+    assert pv1.value_fn({"pv1_power_mqtt": "123"}) == 123.0
+    assert pv2.value_fn({"pv2_power_mqtt": "456"}) == 456.0
+    assert pv1.value_fn({"pv2_power_mqtt": 456.0}) is None
+    assert pv2.value_fn({"pv1_power_mqtt": 123.0}) is None
 
 
 def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():

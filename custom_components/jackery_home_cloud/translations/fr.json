@@ -148,6 +148,8 @@
       "bms1_temperature_ambient": {"name": "Température ambiante BMS1"},
       "bms1_temperature_avg_cell": {"name": "Température moyenne des cellules BMS1"},
       "battery_energy_remaining": {"name": "Énergie restante de la batterie"},
+      "pv1_power": {"name": "Puissance PV1"},
+      "pv2_power": {"name": "Puissance PV2"},
       "pv_power": {"name": "Puissance PV"},
       "eps_load_power": {"name": "Puissance de sortie CA"},
       "eps_load_power_inverted": {"name": "Puissance de sortie CA inversée"},

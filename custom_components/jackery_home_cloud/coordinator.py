@@ -115,6 +115,8 @@ _MQTT_FRESHNESS_GATED_ENERGY_KEYS: frozenset[str] = frozenset(
 _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
     {
         "battery_soc_mqtt",
+        "pv1_power_mqtt",
+        "pv2_power_mqtt",
         "pv_power_mqtt",
         "battery_power_mqtt",
         "battery_power_bms1_mqtt",
@@ -2505,6 +2507,23 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and pv2_power_timestamp is not None
             and (now - pv2_power_timestamp).total_seconds() <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
         )
+
+        # Publish each physical PV input independently. The aggregate below
+        # deliberately remains stricter and is only available when both
+        # channels are fresh, allowing pv_power to retain its REST fallback.
+        if pv1_power_fresh:
+            merged["pv1_power_mqtt"] = pv1_power_value
+            mqtt_live["pv1_power_mqtt"] = {
+                "value": pv1_power_value,
+                "source": "mqtt",
+            }
+
+        if pv2_power_fresh:
+            merged["pv2_power_mqtt"] = pv2_power_value
+            mqtt_live["pv2_power_mqtt"] = {
+                "value": pv2_power_value,
+                "source": "mqtt",
+            }
 
         if pv1_power_fresh and pv2_power_fresh:
             merged["pv_power_mqtt"] = pv1_power_value + pv2_power_value

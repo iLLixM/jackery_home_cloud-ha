@@ -50,6 +50,8 @@ EXPECTED_FRESHNESS_GATED_ENERGY_KEYS = {
 }
 EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
     "battery_soc_mqtt",
+    "pv1_power_mqtt",
+    "pv2_power_mqtt",
     "pv_power_mqtt",
     "battery_power_mqtt",
     "battery_power_bms1_mqtt",
@@ -1748,6 +1750,100 @@ class TestPowerValueFreshnessGating:
         coordinator = _make_coordinator(live)
         merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
         assert "grid_power_mqtt" not in merged
+
+
+class TestPvInputPowerFreshnessGating:
+    """Publish PV inputs independently while keeping the aggregate strict."""
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_both_fresh_inputs_publish_components_and_aggregate(self):
+        now = dt_util.utcnow()
+        coordinator = _make_coordinator(
+            {
+                "pv1_power_mqtt": 320.0,
+                "pv1_power_mqtt_at": now,
+                "pv2_power_mqtt": 180.0,
+                "pv2_power_mqtt_at": now,
+            }
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged["pv1_power_mqtt"] == 320.0
+        assert merged["pv2_power_mqtt"] == 180.0
+        assert merged["pv_power_mqtt"] == 500.0
+        assert merged["mqtt_live"]["pv1_power_mqtt"] == {
+            "value": 320.0,
+            "source": "mqtt",
+        }
+        assert merged["mqtt_live"]["pv2_power_mqtt"] == {
+            "value": 180.0,
+            "source": "mqtt",
+        }
+        assert merged["mqtt_live"]["pv_power_mqtt"] == {
+            "value": 500.0,
+            "source": "mqtt",
+            "pv1_power": 320.0,
+            "pv2_power": 180.0,
+        }
+
+    @pytest.mark.parametrize(
+        ("fresh_key", "stale_key", "expected_value"),
+        (
+            pytest.param(
+                "pv1_power_mqtt",
+                "pv2_power_mqtt",
+                320.0,
+                id="pv1-fresh-pv2-stale",
+            ),
+            pytest.param(
+                "pv2_power_mqtt",
+                "pv1_power_mqtt",
+                180.0,
+                id="pv2-fresh-pv1-stale",
+            ),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_each_input_remains_independently_available(
+        self, fresh_key, stale_key, expected_value
+    ):
+        now = dt_util.utcnow()
+        values = {
+            "pv1_power_mqtt": 320.0,
+            "pv1_power_mqtt_at": now,
+            "pv2_power_mqtt": 180.0,
+            "pv2_power_mqtt_at": now,
+        }
+        values[f"{stale_key}_at"] = now - timedelta(seconds=121)
+        coordinator = _make_coordinator(values)
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert merged[fresh_key] == expected_value
+        assert stale_key not in merged
+        assert "pv_power_mqtt" not in merged
+
+    @pytest.mark.parametrize(
+        ("age_seconds", "expected_present"),
+        (
+            pytest.param(120, True, id="inclusive-boundary"),
+            pytest.param(121, False, id="expired"),
+        ),
+    )
+    @freeze_time("2026-01-01 12:00:00")
+    def test_component_freshness_boundary(self, age_seconds, expected_present):
+        timestamp = dt_util.utcnow() - timedelta(seconds=age_seconds)
+        coordinator = _make_coordinator(
+            {
+                "pv1_power_mqtt": 320.0,
+                "pv1_power_mqtt_at": timestamp,
+            }
+        )
+
+        merged = coordinator._apply_mqtt_live_values_to_bundle(SYSTEM_ID, {})
+
+        assert ("pv1_power_mqtt" in merged) is expected_present
 
 
 class TestEnergyCounterFreshnessGating:

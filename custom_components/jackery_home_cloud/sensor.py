@@ -312,6 +312,34 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
     ),
     JackeryMetricDescription(
+        key="pv1_power",
+        translation_key="pv1_power",
+        name="PV1 power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:solar-power",
+        requires_mqtt=True,
+        # Physical PV input 1, confirmed via observed MQTT PROPERTY_MAP:
+        # "50490369": "HB-PCS-MODEL_pvP1".
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv1_power_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pv2_power",
+        translation_key="pv2_power",
+        name="PV2 power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:solar-power",
+        requires_mqtt=True,
+        # Physical PV input 2, confirmed via observed MQTT PROPERTY_MAP:
+        # "50490370": "HB-PCS-MODEL_pvP2".
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv2_power_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
         key="pv_power",
         translation_key="pv_power",
         name="PV power",

@@ -235,6 +235,8 @@ These include, depending on device support:
 
 - Battery power
 - Battery power BMS1
+- PV1 power
+- PV2 power
 - Battery charged
 - Battery discharged
 - AC-Output energy in

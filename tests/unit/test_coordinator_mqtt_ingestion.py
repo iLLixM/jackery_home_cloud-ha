@@ -247,6 +247,62 @@ class TestExperimentalPowerPipeline:
             assert sensor.native_value == expected_value
 
 
+class TestPvInputPowerPipeline:
+    """Exercise both physical PV inputs from MQTT payload to HA sensors."""
+
+    @freeze_time("2026-01-01 12:00:00")
+    def test_single_pcs_report_reaches_pv1_pv2_and_aggregate_sensors(self):
+        coordinator = _make_coordinator()
+        message = {
+            "payload_json": {
+                "cmd": "data_get",
+                "gw_sn": PRIMARY_SERIAL,
+                "info": {
+                    "dev_list": [
+                        {
+                            "dev_sn": f"pcs_{PRIMARY_SERIAL}",
+                            "meter_list": [
+                                [MQTT_PCS_PV1_POWER_METER_ID, "321"],
+                                [MQTT_PCS_PV2_POWER_METER_ID, "179"],
+                            ],
+                        }
+                    ],
+                    "result": "0",
+                    "reason": "ok",
+                },
+            }
+        }
+
+        coordinator._ingest_mqtt_live_values(message)
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live["pv1_power_mqtt"] == 321.0
+        assert live["pv2_power_mqtt"] == 179.0
+
+        source_bundle = coordinator.data["systems"][PRIMARY_SYSTEM]
+        merged = coordinator._apply_mqtt_live_values_to_bundle(
+            PRIMARY_SYSTEM,
+            source_bundle,
+        )
+        coordinator.data["systems"][PRIMARY_SYSTEM] = merged
+
+        expected_values = {
+            "pv1_power": 321.0,
+            "pv2_power": 179.0,
+            "pv_power": 500.0,
+        }
+        descriptions = {
+            description.key: description
+            for description in SYSTEM_SENSOR_DESCRIPTIONS
+        }
+        for sensor_key, expected_value in expected_values.items():
+            sensor = JackeryMetricSensor(
+                coordinator=coordinator,
+                system_id=PRIMARY_SYSTEM,
+                description=descriptions[sensor_key],
+            )
+            assert sensor.native_value == expected_value
+
+
 class TestMqttReportTimestampCoherence:
     def test_all_values_from_one_report_share_one_reception_timestamp(self):
         """Clock movement while parsing must not split one observation batch.
