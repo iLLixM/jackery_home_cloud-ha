@@ -151,7 +151,6 @@ class TestAcOutputSwitch:
             "systems": {"sys1": {"system": {"systemNo": "SN1"}}},
         }
         coordinator._mqtt_live_values = {}
-        coordinator._ac_main_l1_direction = {}
         coordinator._mqtt_update_events = {}
         coordinator._mqtt_state = {"connected": True}
         coordinator.async_update_listeners = lambda: None

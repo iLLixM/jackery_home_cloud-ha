@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
-import math
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,10 +18,6 @@ from homeassistant.util import dt as dt_util
 
 from .api.client import JackeryApiClient
 from .const import (
-    AC_MAIN_IDLE_POWER_THRESHOLD_W,
-    AC_MAIN_L1_SIGN_DEADBAND_W,
-    AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
-    AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
     CONF_ACCOUNT,
     CONF_MQTT_SYSTEM_ID,
     CONF_MQTT_SYSTEM_SELECTION_PENDING,
@@ -65,7 +60,6 @@ from .const import (
     MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS,
     MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
     MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS,
-    MQTT_PCS_AC_MAIN_POWER_METER_ID,
     MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
     MQTT_PCS_ACTIVE_POWER_METER_ID,
     MQTT_PCS_APPARENT_POWER_METER_ID,
@@ -124,7 +118,6 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "grid_power_mqtt",
         "eps_load_power_mqtt",
         "ac_main_power_mqtt",
-        "ac_main_power_heur_mqtt",
         "pcs_active_power_l1_mqtt",
         "pcs_apparent_power_mqtt",
         "pcs_active_power_mqtt",
@@ -164,7 +157,6 @@ _FAST_EMS_METER_IDS: tuple[str, ...] = (
 _FAST_PCS_METER_IDS: tuple[str, ...] = (
     MQTT_PCS_PV1_POWER_METER_ID,
     MQTT_PCS_PV2_POWER_METER_ID,
-    MQTT_PCS_AC_MAIN_POWER_METER_ID,
     MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
     MQTT_PCS_APPARENT_POWER_METER_ID,
     MQTT_PCS_ACTIVE_POWER_METER_ID,
@@ -303,12 +295,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_error_at": None,
         }
         self._mqtt_live_values: dict[str, dict[str, Any]] = {}
-        # Last direction clearly established by a fresh, contemporaneous PCS
-        # active-power-L1 sample outside its deadband. This transient state is
-        # deliberately bounded: weak L1 samples retain it only while they stay
-        # non-zero and same-signed; unusable or contradictory telemetry clears
-        # it. It is never persisted beyond the coordinator instance lifetime.
-        self._ac_main_l1_direction: dict[str, int] = {}
         self._meter_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
         # Per-system wake signal for async_set_meter_value()'s event-driven
         # verification wait (discussion #6, item 6, "Event-driven write
@@ -1292,12 +1278,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_serial=gw_sn,
             meter_id=MQTT_EMS_WORK_MODE_METER_ID,
         )
-        ac_main_power_magnitude = extract_ems_meter_value(
-            payload,
-            device_serial=gw_sn,
-            meter_id=MQTT_PCS_AC_MAIN_POWER_METER_ID,
-            dev_sn_prefix="pcs",
-        )
         pcs_active_power_l1 = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1420,7 +1400,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and pv1_power is None
             and pv2_power is None
             and work_mode_raw is None
-            and ac_main_power_magnitude is None
             and pcs_active_power_l1 is None
             and pcs_apparent_power is None
             and pcs_active_power is None
@@ -1699,32 +1678,27 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 work_mode_raw,
             )
 
-        if ac_main_power_magnitude is not None:
+        # PROPERTY_MAP 50397185 (PCS active power L1) is the externally
+        # validated, signed MQTT source for AC main power. Keep its raw value
+        # separately as an optional diagnostic while the bundle merge aliases
+        # it to the established AC-main field.
+        if pcs_active_power_l1 is not None:
             updated.update(
                 {
-                    "ac_main_power_mqtt": ac_main_power_magnitude,
-                    "ac_main_power_mqtt_at": received_at,
+                    "pcs_active_power_l1_mqtt": pcs_active_power_l1,
+                    "pcs_active_power_l1_mqtt_at": received_at,
                 }
             )
             _LOGGER.debug(
-                "Accepted MQTT AC main power magnitude for %s from meter %s: %s W",
+                "Accepted MQTT PCS active power L1 for %s from meter %s: %s W",
                 system_id,
-                MQTT_PCS_AC_MAIN_POWER_METER_ID,
-                ac_main_power_magnitude,
+                MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
+                pcs_active_power_l1,
             )
 
-        # These experimental PROPERTY_MAP meters are retained as raw signed
-        # observations. Do not normalize their signs or feed them into the
-        # AC-main heuristic until field validation establishes their physical
-        # measurement boundaries and direction conventions.
+        # The remaining PROPERTY_MAP power meters are retained as raw signed
+        # observations for continued experimental validation.
         experimental_power_values = (
-            (
-                "pcs_active_power_l1_mqtt",
-                pcs_active_power_l1,
-                MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
-                "PCS active power L1",
-                "W",
-            ),
             (
                 "pcs_apparent_power_mqtt",
                 pcs_apparent_power,
@@ -2232,68 +2206,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return _system_local_day_key(monitor)
         return dt_util.utcnow().strftime(TREND_DATE_FORMAT)
 
-    def _select_ac_main_l1_sign(
-        self,
-        system_id: str,
-        *,
-        ac_main_magnitude_abs: float,
-        heuristic_value: float,
-        l1_value: float | None,
-        l1_age_seconds: float | None,
-        l1_skew_seconds: float | None,
-    ) -> tuple[float, str]:
-        """Select the AC-main sign using bounded per-system L1 direction state."""
-        if l1_value is None or l1_age_seconds is None:
-            self._ac_main_l1_direction.pop(system_id, None)
-            return (
-                heuristic_value,
-                "pcs_active_power_l1_missing_heuristic_fallback",
-            )
-
-        if l1_age_seconds > MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS:
-            self._ac_main_l1_direction.pop(system_id, None)
-            return (
-                heuristic_value,
-                "pcs_active_power_l1_stale_heuristic_fallback",
-            )
-
-        if not _sample_is_contemporaneous(l1_skew_seconds):
-            self._ac_main_l1_direction.pop(system_id, None)
-            return (
-                heuristic_value,
-                "pcs_active_power_l1_skew_heuristic_fallback",
-            )
-
-        if l1_value > AC_MAIN_L1_SIGN_DEADBAND_W:
-            self._ac_main_l1_direction[system_id] = 1
-            return ac_main_magnitude_abs, "pcs_active_power_l1_positive"
-
-        if l1_value < -AC_MAIN_L1_SIGN_DEADBAND_W:
-            self._ac_main_l1_direction[system_id] = -1
-            return -ac_main_magnitude_abs, "pcs_active_power_l1_negative"
-
-        remembered_direction = self._ac_main_l1_direction.get(system_id)
-        l1_direction = 1 if l1_value > 0 else -1 if l1_value < 0 else 0
-        if remembered_direction is not None and l1_direction == remembered_direction:
-            held_source = (
-                "pcs_active_power_l1_deadband_held_positive"
-                if remembered_direction > 0
-                else "pcs_active_power_l1_deadband_held_negative"
-            )
-            return (
-                math.copysign(ac_main_magnitude_abs, remembered_direction),
-                held_source,
-            )
-
-        # Exact zero, an opposite weak sign or the absence of a previously
-        # confirmed direction returns control to the unchanged heuristic. A
-        # contradictory sample also prevents the old direction resurfacing.
-        self._ac_main_l1_direction.pop(system_id, None)
-        return (
-            heuristic_value,
-            "pcs_active_power_l1_deadband_heuristic_fallback",
-        )
-
     def _apply_mqtt_live_values_to_bundle(
         self,
         system_id: str,
@@ -2303,7 +2215,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         merged = dict(bundle)
         live = self._mqtt_live_values.get(system_id)
         if not isinstance(live, Mapping):
-            self._ac_main_l1_direction.pop(system_id, None)
             return merged
 
         now = dt_util.utcnow()
@@ -2615,559 +2526,19 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 merged[key] = value
                 mqtt_live[key] = {"value": value, "source": "mqtt"}
 
-        # ac_main_power_mqtt's raw MQTT meter is treated as an unsigned magnitude.
-        #
-        # IMPORTANT:
-        # All calculations below are used ONLY to determine the sign.
-        # The absolute AC Main power value always remains the MQTT-derived
-        # ac_main_magnitude and is never recalculated from PV/battery/EPS values.
-        #
-        # First calculate the complete legacy heuristic result using this
-        # decision priority. A contemporaneous PCS active-power-L1 sample
-        # outside its deadband may replace only that result's sign afterwards.
-        #
-        # Heuristic sign decision priority:
-        #
-        # 1. Complete PV + battery + EPS data:
-        #    - detect a low-power / idle condition
-        #    - otherwise use the sign of the complete power balance
-        #
-        # 2. Battery + EPS available, but PV incomplete/stale:
-        #    - use a conservative minimum-balance test that can prove
-        #      a positive direction without assuming PV = 0
-        #
-        # 3. PV + battery available, but EPS unavailable/stale:
-        #    - use the previous PV/battery sign heuristic
-        #
-        # 4. Battery available only:
-        #    - use the original battery-only heuristic
-        #
-        # 5. No strict decision, but every generally fresh input is low-power:
-        #    - recognize stable internal consumption across split EMS/PCS replies
-        #
-        # 6. No usable sign information:
-        #    - keep the MQTT magnitude unsigned/positive
-
-        ac_main_timestamp = live.get("ac_main_power_mqtt_at")
-        ac_main_magnitude = _coerce_float(live.get("ac_main_power_mqtt"))
-
-        if (
-            ac_main_magnitude is not None
-            and ac_main_timestamp is not None
-            and (now - ac_main_timestamp).total_seconds()
-            <= MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS
-        ):
-            battery_power_signed = merged.get("battery_power_mqtt")
-            eps_load_power_signed = merged.get("eps_load_power_mqtt")
-
-            # The general power-value merge above already removed stale MQTT
-            # overlays and reapplied only samples inside the 120-second live
-            # window. Keep that broader freshness information separate from
-            # the much stricter contemporaneous cohort used for dynamic power
-            # balancing below. It is safe to use the broader cohort only for
-            # the bounded low-power standby fallback added after all strict
-            # sign decisions.
-            battery_power_fresh = isinstance(
-                battery_power_signed,
-                (int, float),
-            )
-            eps_load_power_fresh = isinstance(
-                eps_load_power_signed,
-                (int, float),
-            )
-
-            # General freshness controls whether a power value is published as
-            # a sensor. Sign reconstruction is stricter: every input must also
-            # describe approximately the same physical instant as AC Main.
-            # Otherwise a still-fresh cached value from an earlier poll cycle
-            # could reverse the inferred direction during a load transition.
-            battery_power_skew_seconds = _sample_skew_seconds(
-                ac_main_timestamp,
-                live.get("battery_power_mqtt_at"),
-            )
-            eps_load_power_skew_seconds = _sample_skew_seconds(
-                ac_main_timestamp,
-                live.get("eps_load_power_mqtt_at"),
-            )
-            pv1_power_skew_seconds = _sample_skew_seconds(
-                ac_main_timestamp,
-                pv1_power_timestamp,
-            )
-            pv2_power_skew_seconds = _sample_skew_seconds(
-                ac_main_timestamp,
-                pv2_power_timestamp,
-            )
-
-            battery_power_available = (
-                battery_power_fresh
-                and _sample_is_contemporaneous(battery_power_skew_seconds)
-            )
-            eps_load_power_available = (
-                eps_load_power_fresh
-                and _sample_is_contemporaneous(eps_load_power_skew_seconds)
-            )
-
-            pv_power_complete = (
-                pv1_power_fresh
-                and pv2_power_fresh
-                and pv1_power_value is not None
-                and pv2_power_value is not None
-                and _sample_is_contemporaneous(pv1_power_skew_seconds)
-                and _sample_is_contemporaneous(pv2_power_skew_seconds)
-            )
-
-            # The MQTT meter provides the AC Main magnitude.
-            # Only its sign may be changed below.
-            ac_main_magnitude_abs = abs(ac_main_magnitude)
-
-            sign_indicator: float | None = None
-            balance_candidate: float | None = None
-            sign_source = "unsigned_fallback"
-
-            # ------------------------------------------------------------------
-            # Debug: record every input relevant to the sign decision.
-            # ------------------------------------------------------------------
-            _LOGGER.debug(
-                "AC main sign evaluation for system %s: "
-                "magnitude=%s, "
-                "pv1=%s (fresh=%s, skew=%s), "
-                "pv2=%s (fresh=%s, skew=%s), "
-                "battery=%s (available=%s, skew=%s), "
-                "eps=%s (available=%s, skew=%s), "
-                "max_skew=%s",
-                system_id,
-                ac_main_magnitude_abs,
-                pv1_power_value,
-                pv1_power_fresh,
-                pv1_power_skew_seconds,
-                pv2_power_value,
-                pv2_power_fresh,
-                pv2_power_skew_seconds,
-                battery_power_signed,
-                battery_power_available,
-                battery_power_skew_seconds,
-                eps_load_power_signed,
-                eps_load_power_available,
-                eps_load_power_skew_seconds,
-                AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
-            )
-
-            # ------------------------------------------------------------------
-            # 1. Complete PV + battery + EPS balance.
-            #
-            # Working balance:
-            #
-            #   balance =
-            #       PV1
-            #     + PV2
-            #     - battery_power
-            #     - eps_load_power
-            #
-            # Sign conventions:
-            #
-            #   battery_power > 0
-            #       battery is charging / absorbing power
-            #
-            #   battery_power < 0
-            #       battery is discharging / supplying power
-            #
-            #   eps_load_power > 0
-            #       external load consumes power from the AC socket
-            #
-            #   eps_load_power < 0
-            #       external source feeds power into the AC socket
-            #
-            # The balance is used only as a direction indicator.
-            # Its absolute value is NOT expected to match ac_main_magnitude,
-            # because internal consumption, conversion losses and measurement
-            # timing can create significant differences.
-            # ------------------------------------------------------------------
-            if (
-                pv_power_complete
-                and battery_power_available
-                and eps_load_power_available
-            ):
-                balance_candidate = (
-                    pv1_power_value
-                    + pv2_power_value
-                    - battery_power_signed
-                    - eps_load_power_signed
-                )
-
-                idle_state = (
-                    abs(pv1_power_value) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                    and abs(pv2_power_value) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                    and abs(battery_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                    and abs(eps_load_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                    and ac_main_magnitude_abs <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                )
-
-                if idle_state:
-                    sign_indicator = -1.0
-                    sign_source = "internal_consumption_idle"
-
-                elif balance_candidate > 0:
-                    # Net power flows from PV/battery/EPS side towards AC Main.
-                    sign_indicator = 1.0
-                    sign_source = "pv_battery_eps_balance_positive"
-
-                elif balance_candidate < 0:
-                    # Net power flows from AC Main towards battery/EPS/internal side.
-                    sign_indicator = -1.0
-                    sign_source = "pv_battery_eps_balance_negative"
-
-                else:
-                    # Exact zero balance is ambiguous.
-                    sign_indicator = None
-                    sign_source = "zero_balance_fallback"
-
-                _LOGGER.debug(
-                    "AC main full balance for system %s: "
-                    "pv1=%s + pv2=%s - battery=%s - eps=%s = %s; "
-                    "magnitude=%s; idle_state=%s; "
-                    "decision=%s; source=%s",
-                    system_id,
-                    pv1_power_value,
-                    pv2_power_value,
-                    battery_power_signed,
-                    eps_load_power_signed,
-                    balance_candidate,
-                    ac_main_magnitude_abs,
-                    idle_state,
-                    (
-                        "+"
-                        if sign_indicator is not None and sign_indicator > 0
-                        else "-"
-                        if sign_indicator is not None and sign_indicator < 0
-                        else "unknown"
-                    ),
-                    sign_source,
-                )
-
-            # ------------------------------------------------------------------
-            # 2. Battery + EPS available, but PV telemetry incomplete/stale.
-            #
-            # Missing PV must NOT generally be treated as zero.
-            #
-            # However, because PV cannot be negative, PV = 0 gives us the
-            # minimum possible balance:
-            #
-            #   minimum_balance =
-            #       -battery_power
-            #       -eps_load_power
-            #
-            # If this lower bound is already positive, and sufficiently large
-            # to establish a clear export direction, positive AC Main can be
-            # inferred without knowing the actual PV value.
-            # ------------------------------------------------------------------
-            elif battery_power_available and eps_load_power_available:
-                minimum_balance = (
-                    -battery_power_signed
-                    - eps_load_power_signed
-                )
-
-                balance_candidate = minimum_balance
-
-                # A positive lower bound is useful only when it exceeds the
-                # observed noise/internal-loss margin. Otherwise a tiny meter
-                # residual could assign its sign to the entire AC-main
-                # magnitude even though the direction remains ambiguous.
-                if minimum_balance > AC_MAIN_MINIMUM_BALANCE_MARGIN_W:
-                    sign_indicator = 1.0
-                    sign_source = "battery_eps_minimum_balance_positive"
-
-                    _LOGGER.debug(
-                        "AC main minimum-balance decision for system %s: "
-                        "-battery=%s - eps=%s -> minimum_balance=%s; "
-                        "PV incomplete; margin=%s; decision=+; source=%s",
-                        system_id,
-                        battery_power_signed,
-                        eps_load_power_signed,
-                        minimum_balance,
-                        AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
-                        sign_source,
-                    )
-                elif minimum_balance > 0:
-                    sign_source = "battery_eps_minimum_balance_within_margin"
-                    _LOGGER.debug(
-                        "AC main minimum balance within noise/loss margin for "
-                        "system %s: minimum_balance=%s, margin=%s; "
-                        "PV telemetry incomplete; continuing with fallback logic",
-                        system_id,
-                        minimum_balance,
-                        AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
-                    )
-                else:
-                    # A non-positive lower bound does NOT prove a negative AC Main
-                    # direction, because unknown PV generation could still make
-                    # the real balance positive.
-                    sign_source = "battery_eps_minimum_balance_inconclusive"
-                    _LOGGER.debug(
-                        "AC main minimum balance inconclusive for system %s: "
-                        "minimum_balance=%s; PV telemetry incomplete; "
-                        "continuing with fallback logic",
-                        system_id,
-                        minimum_balance,
-                    )
-
-            # ------------------------------------------------------------------
-            # 3. PV + battery fallback when EPS is unavailable/stale.
-            # ------------------------------------------------------------------
-            if (
-                sign_indicator is None
-                and pv_power_complete
-                and battery_power_available
-                and not eps_load_power_available
-            ):
-                balance_candidate = (
-                    pv1_power_value
-                    + pv2_power_value
-                    - battery_power_signed
-                )
-
-                if balance_candidate > 0:
-                    sign_indicator = 1.0
-                    sign_source = "pv_battery_fallback_positive"
-
-                elif balance_candidate < 0:
-                    sign_indicator = -1.0
-                    sign_source = "pv_battery_fallback_negative"
-
-                else:
-                    sign_source = "pv_battery_fallback_zero"
-
-                _LOGGER.debug(
-                    "AC main PV/battery fallback for system %s: "
-                    "pv1=%s + pv2=%s - battery=%s = %s; "
-                    "sign_indicator=%s; source=%s",
-                    system_id,
-                    pv1_power_value,
-                    pv2_power_value,
-                    battery_power_signed,
-                    balance_candidate,
-                    sign_indicator,
-                    sign_source,
-                )
-
-            # ------------------------------------------------------------------
-            # 4. Original battery-only fallback.
-            # ------------------------------------------------------------------
-            if (
-                sign_indicator is None
-                and battery_power_available
-                and not pv_power_complete
-                and not eps_load_power_available
-                and battery_power_signed != 0
-            ):
-                sign_indicator = -battery_power_signed
-                sign_source = "battery_fallback"
-
-                _LOGGER.debug(
-                    "AC main battery fallback for system %s: "
-                    "battery=%s -> sign_indicator=%s; source=%s",
-                    system_id,
-                    battery_power_signed,
-                    sign_indicator,
-                    sign_source,
-                )
-
-            # ------------------------------------------------------------------
-            # 5. Stable low-power / standby fallback.
-            #
-            # Fast polling requests EMS and PCS meters together, but the
-            # device may return them in separate MQTT messages. Publishing
-            # after the first partial reply makes the new values temporarily
-            # non-contemporaneous with the other device group's still-fresh
-            # values. Dynamic balance decisions must retain the strict sample
-            # skew guard, while an otherwise inconclusive set of fresh values
-            # that is uniformly low-power is sufficient evidence for the
-            # observed negative internal standby consumption.
-            #
-            # Limit combined PV magnitude as well as each remaining input so
-            # two individually small PV channels cannot together establish a
-            # material positive flow that is then mislabeled as standby.
-            # ------------------------------------------------------------------
-            fresh_low_power_idle = (
-                sign_indicator is None
-                and ac_main_magnitude_abs <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                and pv1_power_fresh
-                and pv2_power_fresh
-                and pv1_power_value is not None
-                and pv2_power_value is not None
-                and (
-                    abs(pv1_power_value) + abs(pv2_power_value)
-                    <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                )
-                and battery_power_fresh
-                and abs(battery_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-                and eps_load_power_fresh
-                and abs(eps_load_power_signed) <= AC_MAIN_IDLE_POWER_THRESHOLD_W
-            )
-            if fresh_low_power_idle:
-                sign_indicator = -1.0
-                sign_source = "internal_consumption_idle_fresh_fallback"
-                _LOGGER.debug(
-                    "AC main fresh low-power fallback for system %s: "
-                    "magnitude=%s, pv1=%s, pv2=%s, battery=%s, eps=%s; "
-                    "sample skews may exceed %s seconds; decision=-; source=%s",
-                    system_id,
-                    ac_main_magnitude_abs,
-                    pv1_power_value,
-                    pv2_power_value,
-                    battery_power_signed,
-                    eps_load_power_signed,
-                    AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
-                    sign_source,
-                )
-
-            # ------------------------------------------------------------------
-            # 6. Apply ONLY the selected sign to the raw MQTT magnitude.
-            #
-            # balance_candidate/sign_indicator must NEVER replace the actual
-            # AC Main power magnitude.
-            # ------------------------------------------------------------------
-            if sign_indicator is not None and sign_indicator != 0:
-                ac_main_power_heur_signed = math.copysign(
-                    ac_main_magnitude_abs,
-                    sign_indicator,
-                )
-            else:
-                ac_main_power_heur_signed = ac_main_magnitude_abs
-
-                _LOGGER.debug(
-                    "AC main unsigned fallback for system %s: "
-                    "sign_indicator=%s; magnitude=%s",
-                    system_id,
-                    sign_indicator,
-                    ac_main_magnitude_abs,
-                )
-
-            # Diagnostic only:
-            # This delta is useful for analysing conversion losses, timing
-            # differences and internal consumption, but it is intentionally
-            # NOT used to determine the sign anymore.
-            balance_delta = (
-                balance_candidate - ac_main_magnitude_abs
-                if balance_candidate is not None
-                else None
-            )
-
-            _LOGGER.debug(
-                "AC main result for system %s: "
-                "raw_magnitude=%s, balance_candidate=%s, "
-                "balance_delta=%s, sign_indicator=%s, "
-                "sign_source=%s, heuristic_value=%s",
-                system_id,
-                ac_main_magnitude_abs,
-                balance_candidate,
-                balance_delta,
-                sign_indicator,
-                sign_source,
-                ac_main_power_heur_signed,
-            )
-
-            heuristic_metadata = {
-                "value": ac_main_power_heur_signed,
-                "source": "mqtt_heuristic",
-                "raw_magnitude": ac_main_magnitude,
-                "balance_candidate": balance_candidate,
-                "balance_delta": balance_delta,
-                "sign_indicator": sign_indicator,
-                "sign_source": sign_source,
-                "minimum_balance_margin_w": AC_MAIN_MINIMUM_BALANCE_MARGIN_W,
-                "sample_max_skew_seconds": AC_MAIN_SAMPLE_MAX_SKEW_SECONDS,
-                "sample_skew_seconds": {
-                    "pv1": pv1_power_skew_seconds,
-                    "pv2": pv2_power_skew_seconds,
-                    "battery": battery_power_skew_seconds,
-                    "eps": eps_load_power_skew_seconds,
-                },
-            }
-            merged["ac_main_power_heur_mqtt"] = ac_main_power_heur_signed
-            mqtt_live["ac_main_power_heur_mqtt"] = heuristic_metadata
-
-            # Prefer the signed PCS active-power-L1 sample when it is fresh and
-            # contemporaneous. A clear sample outside the deadband establishes
-            # bounded per-system direction state; a same-signed non-zero sample
-            # inside the deadband may retain it. The preserved heuristic remains
-            # the fallback whenever L1 is unusable or contradicts that state.
-            l1_value = _coerce_float(live.get("pcs_active_power_l1_mqtt"))
-            l1_timestamp = live.get("pcs_active_power_l1_mqtt_at")
-            l1_age_seconds = (
-                (now - l1_timestamp).total_seconds()
-                if l1_timestamp is not None
-                else None
-            )
-            l1_skew_seconds = _sample_skew_seconds(
-                ac_main_timestamp,
-                l1_timestamp,
-            )
-
-            remembered_direction_before = self._ac_main_l1_direction.get(system_id)
-            ac_main_power_signed, final_sign_source = self._select_ac_main_l1_sign(
-                system_id,
-                ac_main_magnitude_abs=ac_main_magnitude_abs,
-                heuristic_value=ac_main_power_heur_signed,
-                l1_value=l1_value if l1_timestamp is not None else None,
-                l1_age_seconds=l1_age_seconds,
-                l1_skew_seconds=l1_skew_seconds,
-            )
-            remembered_direction_after = self._ac_main_l1_direction.get(system_id)
-
-            _LOGGER.debug(
-                "AC main L1 sign selection for system %s: "
-                "raw_magnitude=%s, l1=%s, l1_age=%s, l1_skew=%s, "
-                "deadband=%s, heuristic_value=%s, "
-                "heuristic_source=%s, remembered_before=%s, "
-                "remembered_after=%s, final_source=%s, final_value=%s",
-                system_id,
-                ac_main_magnitude_abs,
-                l1_value,
-                l1_age_seconds,
-                l1_skew_seconds,
-                AC_MAIN_L1_SIGN_DEADBAND_W,
-                ac_main_power_heur_signed,
-                sign_source,
-                remembered_direction_before,
-                remembered_direction_after,
-                final_sign_source,
-                ac_main_power_signed,
-            )
-
-            merged["ac_main_power_mqtt"] = ac_main_power_signed
+        # External comparison with an independent physical meter validated
+        # PCS active-power L1 (50397185 / HB-PCS-MODEL_activePL1) as the
+        # signed active power at the primary AC connection. The standard
+        # fast-power merge above has already applied its freshness gate, so
+        # derive the established AC-main MQTT overlay from that one source.
+        l1_value = _coerce_float(merged.get("pcs_active_power_l1_mqtt"))
+        if l1_value is not None:
+            merged["ac_main_power_mqtt"] = l1_value
             mqtt_live["ac_main_power_mqtt"] = {
-                "value": ac_main_power_signed,
+                "value": l1_value,
                 "source": "mqtt",
-                "raw_magnitude": ac_main_magnitude,
-                "sign_source": final_sign_source,
-                "pcs_active_power_l1": l1_value,
-                "pcs_active_power_l1_age_seconds": l1_age_seconds,
-                "pcs_active_power_l1_skew_seconds": l1_skew_seconds,
-                "pcs_active_power_l1_deadband_w": AC_MAIN_L1_SIGN_DEADBAND_W,
-                "pcs_active_power_l1_remembered_direction": (
-                    remembered_direction_after
-                ),
-                "heuristic_value": ac_main_power_heur_signed,
-                "heuristic_sign_source": sign_source,
+                "meter_id": MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
             }
-
-        else:
-            self._ac_main_l1_direction.pop(system_id, None)
-            # Distinguish stale/missing AC Main telemetry from a sign-logic issue.
-            ac_main_age_seconds = (
-                (now - ac_main_timestamp).total_seconds()
-                if ac_main_timestamp is not None
-                else None
-            )
-
-            _LOGGER.debug(
-                "Skipping MQTT AC main value for system %s: "
-                "magnitude=%s, timestamp=%s, age_seconds=%s",
-                system_id,
-                ac_main_magnitude,
-                ac_main_timestamp,
-                ac_main_age_seconds,
-            )
 
         # Keep the daily REST/trend summary in the bundle after applying any
         # fresher MQTT values above. This assignment must remain outside the
@@ -3680,21 +3051,6 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _sample_skew_seconds(reference: Any, candidate: Any) -> float | None:
-    """Return the absolute timestamp distance between two MQTT samples."""
-    if not isinstance(reference, datetime) or not isinstance(candidate, datetime):
-        return None
-    return abs((candidate - reference).total_seconds())
-
-
-def _sample_is_contemporaneous(skew_seconds: float | None) -> bool:
-    """Return whether a sample may contribute to AC-main sign inference."""
-    return (
-        skew_seconds is not None
-        and skew_seconds <= AC_MAIN_SAMPLE_MAX_SKEW_SECONDS
-    )
 
 
 def _validate_and_pad_schedule_raw(raw: str) -> str | None:

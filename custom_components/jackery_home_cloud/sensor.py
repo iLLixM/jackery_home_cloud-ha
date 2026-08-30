@@ -118,9 +118,8 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value when fresh, falling back to REST.
-        # See MQTT_PCS_AC_MAIN_POWER_METER_ID in const.py for the raw
-        # meter's sign convention.
+        # Uses the externally validated signed PCS active-power-L1 value when
+        # fresh, falling back to REST acMainPower otherwise.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "ac_main_power_mqtt",
@@ -128,23 +127,8 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
-    JackeryMetricDescription(
-        key="ac_main_power_heur",
-        translation_key="ac_main_power_heur",
-        name="AC main power HEUR",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        requires_mqtt=True,
-        value_fn=lambda bundle: _coerce_float(
-            bundle.get("ac_main_power_heur_mqtt")
-        ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
-    ),
-    # Raw MQTT meters retained for comparison with the production L1-assisted
-    # AC-main result and its separate heuristic-only diagnostic value.
+    # Raw MQTT meter retained for direct comparison with the established
+    # AC-main entity, which uses the same value while it remains fresh.
     JackeryMetricDescription(
         key="pcs_active_power_l1",
         translation_key="pcs_active_power_l1",

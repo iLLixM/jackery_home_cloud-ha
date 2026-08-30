@@ -112,65 +112,14 @@ MQTT_PCS_PV2_POWER_METER_ID = "50490370"
 
 # PCS power meters identified from observed MQTT PROPERTY_MAP data. Their raw
 # values and signs remain exposed unchanged for field validation. Active power
-# L1 is additionally used as the preferred AC-main sign indicator outside the
-# empirical deadband declared below.
+# L1 has additionally been validated against an independent physical meter and
+# is used directly as the fresh MQTT source for AC main power.
 # PROPERTY_MAPPING "50397185":"HB-PCS-MODEL_activePL1"
 MQTT_PCS_ACTIVE_POWER_L1_METER_ID: str = "50397185"
 # PROPERTY_MAPPING "50393089":"HB-PCS-MODEL_apparentPower"
 MQTT_PCS_APPARENT_POWER_METER_ID: str = "50393089"
 # PROPERTY_MAPPING "50394113":"HB-PCS-MODEL_activePower"
 MQTT_PCS_ACTIVE_POWER_METER_ID: str = "50394113"
-
-# Magnitude of REST ac_main_power (power at the AC-main/PCS boundary tied to
-# battery charge/discharge) - distinct from MQTT_EMS_EPS_LOAD_POWER_METER_ID
-# (AC output socket power) and MQTT_EMS_OTHER_LOAD_POWER_METER_ID (household
-# load, which only matches this value when grid_power is ~0). The raw meter
-# is UNSIGNED; coordinator.py combines its absolute magnitude with the sign of
-# MQTT_PCS_ACTIVE_POWER_L1_METER_ID when that sample is sufficiently clear and
-# contemporaneous. The existing PV/battery/EPS heuristic remains the fallback.
-# Do not assume this raw meter is signed if reading it directly elsewhere.
-# Candidate, unconfirmed: the meter ID -> field mapping itself is not backed
-# by a PROPERTY_MAP entry, only by observed traffic. See CONTRIBUTING.md's
-# MQTT-vs-REST / AC main power sign validation checklist before removing
-# this hedge.
-# Confirmed via live validation on 2026-08-09: the battery-based heuristic
-# fallback (math.copysign(ac_main_magnitude, -battery_power_signed)) produced
-# the physically correct sign during both a user-triggered forced charge
-# (negative) and a user-triggered discharge (positive), cross-checked
-# against the battery_soc trend and an exact grid_power match with REST at
-# the same moment. The magnitude/scale of this raw meter is still NOT
-# independently confirmed - REST's own acMainPower value cannot serve as a
-# fast ground truth for that comparison (see the cloud-side lag note on
-# MQTT_EMS_OTHER_LOAD_POWER_METER_ID below).
-MQTT_PCS_AC_MAIN_POWER_METER_ID: str = "50416641"
-
-# Empirical zero-crossing/noise region for the signed PCS active-power-L1
-# meter. A clear sample outside +/-20 W establishes a remembered AC-main
-# direction. Fresh, contemporaneous samples inside the deadband may retain
-# that direction while their non-zero sign remains consistent with it.
-# Without a usable remembered direction, the legacy heuristic is used.
-AC_MAIN_L1_SIGN_DEADBAND_W: float = 20.0
-
-# Experimental threshold used only for AC Main sign reconstruction.
-#
-# Real-world observations indicate that Jackery internal consumption
-# can cause a negative AC Main flow of roughly a few tens of watts
-# while PV, battery and EPS power are all close to zero.
-#
-# This is a heuristic threshold, not a confirmed protocol constant.
-AC_MAIN_IDLE_POWER_THRESHOLD_W: float = 50.0
-
-# Minimum positive lower-bound margin required when AC-main direction must be
-# inferred from battery and EPS alone because PV telemetry is incomplete.
-# A separate constant keeps this noise/loss allowance independently tunable
-# from the all-input idle-state heuristic above.
-AC_MAIN_MINIMUM_BALANCE_MARGIN_W: float = 50.0
-
-# Maximum timestamp spread for power samples combined to reconstruct the
-# AC-main direction. This is deliberately shorter than the minimum 5-second
-# fast-poll interval so values from adjacent poll cycles are not balanced as
-# though they described the same physical state.
-AC_MAIN_SAMPLE_MAX_SKEW_SECONDS: float = 2.0
 
 # Instantaneous system battery charge/discharge power reported by the EMS.
 # This value is expected to represent the combined battery power of the
@@ -196,9 +145,9 @@ MQTT_BMS1_TEMPERATURE_AMBIENT_SCALE = 10.0
 MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID: str = "33618945"
 MQTT_BMS1_TEMPERATURE_AVG_CELL_SCALE = 10.0
 
-# Household load power, signed like REST other_load_power itself. Do not
-# confuse with the unsigned MQTT_PCS_AC_MAIN_POWER_METER_ID above - they
-# read the same value only when grid_power is ~0.
+# Household load power, signed like REST other_load_power itself. It has a
+# different physical boundary from PCS active power L1 and can match it only
+# in particular operating states such as near-zero grid flow.
 # PROPERTY_MAPPING "16936961":"HB-EMS-MODEL_otherLoadPower"
 # Confirmed via live validation on 2026-08-09: REST's otherLoadPower (and
 # acMainPower above) update noticeably slower on Jackery's cloud backend

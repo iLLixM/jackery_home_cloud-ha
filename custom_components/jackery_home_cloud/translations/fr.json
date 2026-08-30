@@ -136,7 +136,6 @@
       "co2_saved": {"name": "CO₂ économisé"},
       "grid_power": {"name": "Puissance réseau"},
       "ac_main_power": {"name": "Puissance secteur CA"},
-      "ac_main_power_heur": {"name": "Puissance secteur CA HEUR"},
       "pcs_active_power_l1": {"name": "Puissance active PCS L1"},
       "pcs_apparent_power": {"name": "Puissance apparente PCS"},
       "pcs_active_power": {"name": "Puissance active PCS"},

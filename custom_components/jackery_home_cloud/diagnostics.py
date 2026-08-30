@@ -33,7 +33,7 @@ TO_REDACT = {
 }
 
 # The 6 meters covered by discussion #6 items 10/11 ("Validate MQTT values
-# against REST" / "Validate AC main power sign handling"). mqtt_key and
+# against REST" / "Validate AC main power"). mqtt_key and
 # rest_path match exactly what sensor.py's _mqtt_or_rest() reads for the
 # same sensor, so this block can never disagree with what's shown on the
 # dashboard.

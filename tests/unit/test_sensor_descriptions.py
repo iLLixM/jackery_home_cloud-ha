@@ -33,7 +33,6 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "co2_saved",
         "grid_power",
         "ac_main_power",
-        "ac_main_power_heur",
         "pcs_active_power_l1",
         "pcs_apparent_power",
         "pcs_active_power",
@@ -85,7 +84,6 @@ SIMPLE_UNIQUE_ID_KEYS = frozenset(
         "total_charge_amount",
         "co2_saved",
         "ac_main_power",
-        "ac_main_power_heur",
         "pcs_active_power_l1",
         "pcs_apparent_power",
         "pcs_active_power",
@@ -186,11 +184,25 @@ def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():
     assert energy_in_description.value_fn({"ac_output_energy_in": "12.345"}) == 12.345
 
 
+def test_validated_l1_sensor_preserves_raw_value_as_optional_diagnostic():
+    """Expose the validated AC-main source independently for diagnostics."""
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    description = descriptions["pcs_active_power_l1"]
+
+    assert description.requires_mqtt is True
+    assert description.entity_registry_enabled_default is False
+    assert description.entity_category == "diagnostic"
+    assert description.native_unit_of_measurement == "W"
+    assert description.device_class == "power"
+    assert description.state_class == "measurement"
+    assert description.value_fn({"pcs_active_power_l1_mqtt": "-8.5"}) == -8.5
+    assert description.value_fn({}) is None
+
+
 def test_experimental_power_sensors_preserve_raw_values_and_are_optional_diagnostics():
-    """Keep validation meters independent from the AC-main heuristic."""
+    """Keep the remaining validation candidates as independent diagnostics."""
     descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
     expected = {
-        "pcs_active_power_l1": ("pcs_active_power_l1_mqtt", "W", "power"),
         "pcs_apparent_power": (
             "pcs_apparent_power_mqtt",
             "VA",
@@ -217,44 +229,26 @@ def test_experimental_power_sensors_preserve_raw_values_and_are_optional_diagnos
         assert description.value_fn({}) is None
 
 
-def test_ac_main_heuristic_sensor_is_mqtt_only_optional_diagnostic():
+def test_ac_main_sensor_preserves_identity_and_mqtt_rest_precedence():
     descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
-    description = descriptions["ac_main_power_heur"]
     main_description = descriptions["ac_main_power"]
 
-    assert description.requires_mqtt is True
-    assert description.entity_registry_enabled_default is False
-    assert description.entity_category == "diagnostic"
-    assert description.native_unit_of_measurement == "W"
-    assert description.device_class == "power"
-    assert description.state_class == "measurement"
-    assert description.value_fn({"ac_main_power_heur_mqtt": "-16"}) == -16.0
-    assert description.value_fn({}) is None
-    # HEUR must never display the established entity's REST fallback value.
-    assert (
-        description.value_fn(
-            _nest(
-                (
-                    "monitor",
-                    "energyFlowChartVO",
-                    "acMainVO",
-                    "acMainPower",
-                ),
-                123.0,
-            )
-        )
-        is None
-    )
+    assert main_description.key == "ac_main_power"
+    assert main_description.translation_key == "ac_main_power"
+    assert main_description.unique_id_fn("sys123", {}) == "system_sys123"
+    assert main_description.native_unit_of_measurement == "W"
+    assert main_description.device_class == "power"
+    assert main_description.state_class == "measurement"
     rest_bundle = _nest(
         ("monitor", "energyFlowChartVO", "acMainVO", "acMainPower"),
-        -123.0,
+        -120.0,
     )
-    assert main_description.value_fn(rest_bundle) == -123.0
+    assert main_description.value_fn(rest_bundle) == -120.0
     assert (
         main_description.value_fn(
-            {**rest_bundle, "ac_main_power_mqtt": 125.0}
+            {**rest_bundle, "ac_main_power_mqtt": -123.0}
         )
-        == 125.0
+        == -123.0
     )
 
 

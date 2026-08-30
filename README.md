@@ -627,7 +627,7 @@ Please comment on:
 - regional backend differences
 - API or MQTT changes observed in newer Jackery app or firmware versions
 - behavior of MQTT-backed controls and schedules
-- `AC main power` direction in different operating modes
+- `AC main power` accuracy across devices and operating modes
 - usability of config, reconfigure, and options flows
 - behavior of the automatic primary MQTT-system selection
 
@@ -639,7 +639,7 @@ Security-sensitive findings should be reported privately before technical detail
 
 This is active community software.
 
-Version `0.4.1` builds on the MQTT telemetry and control architecture introduced in v0.4.0. It adds explicit MQTT-system selection, expanded protocol diagnostics, AC-output energy counters, hardened MQTT freshness and restore handling, and more robust AC-main direction inference, including stable negative standby consumption.
+Version `0.4.1` builds on the MQTT telemetry and control architecture introduced in v0.4.0. It adds explicit MQTT-system selection, expanded protocol diagnostics, AC-output energy counters, and hardened MQTT freshness and restore handling. Current development uses the externally validated signed PCS active-power-L1 meter directly as the fresh MQTT source for `AC main power`, with REST `acMainPower` retained as fallback.
 
 The integration should still be treated as unofficial software that depends on undocumented interfaces.
 

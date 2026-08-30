@@ -33,11 +33,13 @@ from custom_components.jackery_home_cloud.sensor import (
 PRIMARY = "sys-primary"
 SECONDARY = "sys-secondary"
 EXPERIMENTAL_POWER_SENSOR_KEYS = {
-    "pcs_active_power_l1",
     "pcs_apparent_power",
     "pcs_active_power",
     "ems_other_load_power_l1",
     "ems_on_grid_power",
+}
+OPTIONAL_POWER_DIAGNOSTIC_SENSOR_KEYS = EXPERIMENTAL_POWER_SENSOR_KEYS | {
+    "pcs_active_power_l1",
 }
 PV_INPUT_SENSOR_KEYS = {"pv1_power", "pv2_power"}
 
@@ -294,7 +296,7 @@ class TestCapabilityGating:
 
 
 class TestSensorCapabilityGating:
-    def test_confirmed_model_keeps_only_experimental_mqtt_sensors_disabled(self):
+    def test_confirmed_model_keeps_optional_power_diagnostics_disabled(self):
         coordinator = _FakeCoordinator(
             {"systems": {PRIMARY: _bundle("SN1")}}, mqtt_system_id=PRIMARY, model_confirmed=True
         )
@@ -305,7 +307,7 @@ class TestSensorCapabilityGating:
         for entity in entities:
             description = getattr(entity, "entity_description", None)
             if description is not None and description.key in requires_mqtt_keys:
-                if description.key in EXPERIMENTAL_POWER_SENSOR_KEYS:
+                if description.key in OPTIONAL_POWER_DIAGNOSTIC_SENSOR_KEYS:
                     assert entity.entity_registry_enabled_default is False
                 else:
                     # Preserve the original capability-gating assertion: a
