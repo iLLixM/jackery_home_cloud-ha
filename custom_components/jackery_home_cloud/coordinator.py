@@ -1204,9 +1204,8 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         # Use one reception timestamp for every value carried by this MQTT
-        # message. Besides accurately representing one observation batch,
-        # this lets the AC-main sign logic distinguish contemporaneous values
-        # from independently cached samples that only happen to be "fresh".
+        # message so all measurements retain the timing of their common
+        # observation batch instead of appearing to arrive independently.
         received_at = dt_util.utcnow()
 
         battery_charged_total = extract_ems_meter_value(

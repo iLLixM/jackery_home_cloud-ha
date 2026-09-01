@@ -149,8 +149,8 @@ MQTT_BMS1_TEMPERATURE_AVG_CELL_SCALE = 10.0
 # different physical boundary from PCS active power L1 and can match it only
 # in particular operating states such as near-zero grid flow.
 # PROPERTY_MAPPING "16936961":"HB-EMS-MODEL_otherLoadPower"
-# Confirmed via live validation on 2026-08-09: REST's otherLoadPower (and
-# acMainPower above) update noticeably slower on Jackery's cloud backend
+# Confirmed via live validation on 2026-08-09: REST's otherLoadPower and
+# acMainPower update noticeably slower on Jackery's cloud backend
 # than grid_power/soc do. During a live forced-charge -> discharge
 # transition, REST's value for this field stayed frozen across several
 # consecutive successful REST polls (confirmed via

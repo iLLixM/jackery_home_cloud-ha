@@ -94,7 +94,7 @@ def _data_report(gw_sn: str, meter_list: list[list[str]]) -> dict:
 
 
 def _power_data_report(gw_sn: str) -> dict:
-    """Build one report containing every AC-main sign input."""
+    """Build one report containing representative fast power values."""
     return {
         "payload_json": {
             "cmd": "data_report",
@@ -351,11 +351,11 @@ class TestPvInputPowerPipeline:
 
 class TestMqttReportTimestampCoherence:
     def test_all_values_from_one_report_share_one_reception_timestamp(self):
-        """Clock movement while parsing must not split one observation batch.
+        """All values from one MQTT report share one reception timestamp.
 
         The deliberately advancing clock would assign different timestamps if
-        ingestion called ``utcnow`` once per meter. A single report must remain
-        coherent so its values can safely contribute to AC-main sign inference.
+        ingestion called ``utcnow`` once per meter. Measurements originating
+        from one MQTT report should retain one common reception timestamp.
         """
         coordinator = _make_coordinator()
         message = _power_data_report(PRIMARY_SERIAL)
