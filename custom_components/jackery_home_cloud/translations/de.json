@@ -132,20 +132,100 @@
   },
   "entity": {
     "sensor": {
-      "battery_count": {
-        "name": "Anzahl Batterien"
-      },
-      "ac_output_energy_in": {
-        "name": "AC-Ausgang Energieeinspeisung"
-      },
-      "ac_output_energy_out": {
-        "name": "AC-Ausgang Energieverbrauch"
-      },
-      "eps_load_power_inverted": {
-        "name": "AC-Ausgang Leistung invertiert"
-      },
-      "total_battery_capacity": {
-        "name": "Gesamte Batteriekapazität"
+      "total_charge_amount": {"name": "Gesamte Lademenge"},
+      "co2_saved": {"name": "Eingespartes CO₂"},
+      "grid_power": {"name": "Netzleistung"},
+      "ac_main_power": {"name": "AC-Netzleistung"},
+      "pcs_active_power_l1": {"name": "PCS-Wirkleistung L1"},
+      "pcs_apparent_power": {"name": "PCS-Scheinleistung"},
+      "pcs_active_power": {"name": "PCS-Wirkleistung"},
+      "ems_other_load_power_l1": {"name": "EMS-Leistung sonstiger Lasten L1"},
+      "ems_on_grid_power": {"name": "EMS-Netzleistung"},
+      "battery_soc": {"name": "Batterieladezustand"},
+      "battery_power": {"name": "Batterieleistung"},
+      "battery_power_bms1": {"name": "Batterieleistung BMS1"},
+      "bms1_temperature_ambient": {"name": "BMS1 Umgebungstemperatur"},
+      "bms1_temperature_avg_cell": {"name": "BMS1 durchschnittliche Zelltemperatur"},
+      "battery_energy_remaining": {"name": "Verbleibende Batterieenergie"},
+      "pv1_power": {"name": "PV1-Leistung"},
+      "pv2_power": {"name": "PV2-Leistung"},
+      "pv_power": {"name": "PV-Leistung"},
+      "eps_load_power": {"name": "AC-Ausgangsleistung"},
+      "eps_load_power_inverted": {"name": "Invertierte AC-Ausgangsleistung"},
+      "other_load_power": {"name": "Hausversorgungsleistung"},
+      "solar_energy_generated_today": {"name": "Heute erzeugte Solarenergie"},
+      "battery_energy_charged_today": {"name": "Heute geladene Batterieenergie"},
+      "battery_energy_discharged_today": {"name": "Heute entladene Batterieenergie"},
+      "battery_energy_charged_total": {"name": "Geladene Batterieenergie gesamt"},
+      "battery_energy_discharged_total": {"name": "Entladene Batterieenergie gesamt"},
+      "ac_output_energy_in": {"name": "Über AC-Ausgang eingespeiste Energie"},
+      "ac_output_energy_out": {"name": "Über AC-Ausgang abgegebene Energie"},
+      "grid_energy_exported_today": {"name": "Heute ins Netz eingespeiste Energie"},
+      "grid_energy_imported_today": {"name": "Heute aus dem Netz bezogene Energie"},
+      "pv1_energy_today": {"name": "PV1-Energie heute"},
+      "pv2_energy_today": {"name": "PV2-Energie heute"},
+      "pv1_energy_total": {"name": "PV1-Energie gesamt"},
+      "pv2_energy_total": {"name": "PV2-Energie gesamt"},
+      "pv_energy_total": {"name": "PV-Energie gesamt"},
+      "on_grid_energy_exported_today": {"name": "Heute eingespeiste On-Grid-Energie"},
+      "battery_count": {"name": "Anzahl Batterien"},
+      "total_battery_capacity": {"name": "Gesamte Batteriekapazität"},
+      "device_connection": {"name": "Geräteverbindung"},
+      "mqtt_connection_status": {"name": "MQTT-Verbindungsstatus"},
+      "mqtt_message_count": {"name": "Anzahl MQTT-Nachrichten"},
+      "mqtt_last_topic": {"name": "Letztes MQTT-Topic"},
+      "mqtt_last_message_at": {"name": "Zeitpunkt der letzten MQTT-Nachricht"},
+      "charge_discharge_schedule": {"name": "Lade-/Entladezeitplan"}
+    },
+    "switch": {
+      "ac_output": {"name": "AC-Ausgang"},
+      "standby": {"name": "Standby"},
+      "auto_standby": {"name": "Automatischer Standby"}
+    },
+    "select": {
+      "work_mode": {"name": "Betriebsmodus"},
+      "output_power_limit": {"name": "Netzausgangsleistungsgrenze"}
+    },
+    "number": {
+      "discharge_limit_soc": {"name": "Entladegrenze"},
+      "charge_limit_soc": {"name": "Ladegrenze"},
+      "feed_power_limit": {"name": "Einspeiseleistungsgrenze"}
+    },
+    "button": {
+      "reboot_device": {"name": "Gerät neu starten"}
+    }
+  },
+  "services": {
+    "set_charge_window": {
+      "name": "Ladezeitfenster festlegen",
+      "description": "Konfiguriert eines von bis zu 10 Ladezeitfenstern. Wirkt nur im Betriebsmodus Zeitabhängige Nutzung.",
+      "fields": {
+        "slot": {"name": "Zeitfenster", "description": "Zu konfigurierendes Ladezeitfenster (0-9)."},
+        "start": {"name": "Startzeit", "description": "Start im 24-Stunden-Format HH:MM; Sekunden werden ignoriert."},
+        "end": {"name": "Endzeit", "description": "Ende im 24-Stunden-Format HH:MM; Sekunden werden ignoriert und der Zeitplan wird täglich wiederholt."}
+      }
+    },
+    "set_discharge_window": {
+      "name": "Entladezeitfenster festlegen",
+      "description": "Konfiguriert eines von bis zu 10 Entladezeitfenstern. Wirkt nur im Betriebsmodus Zeitabhängige Nutzung.",
+      "fields": {
+        "slot": {"name": "Zeitfenster", "description": "Zu konfigurierendes Entladezeitfenster (0-9)."},
+        "start": {"name": "Startzeit", "description": "Start im 24-Stunden-Format HH:MM; Sekunden werden ignoriert."},
+        "end": {"name": "Endzeit", "description": "Ende im 24-Stunden-Format HH:MM; Sekunden werden ignoriert und der Zeitplan wird täglich wiederholt."}
+      }
+    },
+    "clear_charge_window": {
+      "name": "Ladezeitfenster löschen",
+      "description": "Entfernt eines der geplanten Ladezeitfenster.",
+      "fields": {
+        "slot": {"name": "Zeitfenster", "description": "Zu löschendes Ladezeitfenster (0-9)."}
+      }
+    },
+    "clear_discharge_window": {
+      "name": "Entladezeitfenster löschen",
+      "description": "Entfernt eines der geplanten Entladezeitfenster.",
+      "fields": {
+        "slot": {"name": "Zeitfenster", "description": "Zu löschendes Entladezeitfenster (0-9)."}
       }
     }
   }

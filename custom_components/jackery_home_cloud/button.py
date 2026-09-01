@@ -72,7 +72,7 @@ class JackeryRebootButton(CoordinatorEntity[JackeryHomeCloudCoordinator], Button
     """Button entity that reboots a Jackery device via MQTT."""
 
     _attr_has_entity_name = True
-    _attr_name = "Reboot device"
+    _attr_translation_key = "reboot_device"
     _attr_icon = "mdi:restart"
     _attr_entity_category = None
 

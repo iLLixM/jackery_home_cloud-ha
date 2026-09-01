@@ -32,6 +32,16 @@ from custom_components.jackery_home_cloud.sensor import (
 
 PRIMARY = "sys-primary"
 SECONDARY = "sys-secondary"
+EXPERIMENTAL_POWER_SENSOR_KEYS = {
+    "pcs_apparent_power",
+    "pcs_active_power",
+    "ems_other_load_power_l1",
+    "ems_on_grid_power",
+}
+OPTIONAL_POWER_DIAGNOSTIC_SENSOR_KEYS = EXPERIMENTAL_POWER_SENSOR_KEYS | {
+    "pcs_active_power_l1",
+}
+PV_INPUT_SENSOR_KEYS = {"pv1_power", "pv2_power"}
 
 
 class _FakeCoordinator:
@@ -160,6 +170,32 @@ class TestSensorBuildEntitiesGating:
         assert len(primary_requires_mqtt) == len(requires_mqtt_keys)
         assert secondary_requires_mqtt == []
 
+    def test_pv_input_sensors_are_enabled_only_for_confirmed_mqtt_primary(self):
+        coordinator = _FakeCoordinator(
+            {
+                "systems": {
+                    PRIMARY: _bundle("SN1"),
+                    SECONDARY: _bundle("SN2"),
+                }
+            },
+            mqtt_system_id=PRIMARY,
+            model_confirmed=True,
+        )
+
+        entities = _build_entities(coordinator, mqtt_enabled=True)
+        pv_entities = [
+            entity
+            for entity in entities
+            if getattr(entity, "entity_description", None) is not None
+            and entity.entity_description.key in PV_INPUT_SENSOR_KEYS
+        ]
+
+        assert {entity.entity_description.key for entity in pv_entities} == (
+            PV_INPUT_SENSOR_KEYS
+        )
+        assert {entity._system_id for entity in pv_entities} == {PRIMARY}
+        assert all(entity.entity_registry_enabled_default for entity in pv_entities)
+
     def test_rest_sensors_created_for_every_selected_system(self):
         coordinator = _FakeCoordinator(
             {"systems": {PRIMARY: _bundle("SN1"), SECONDARY: _bundle("SN2")}},
@@ -260,7 +296,7 @@ class TestCapabilityGating:
 
 
 class TestSensorCapabilityGating:
-    def test_confirmed_model_requires_mqtt_sensors_are_enabled_by_default(self):
+    def test_confirmed_model_keeps_optional_power_diagnostics_disabled(self):
         coordinator = _FakeCoordinator(
             {"systems": {PRIMARY: _bundle("SN1")}}, mqtt_system_id=PRIMARY, model_confirmed=True
         )
@@ -271,7 +307,21 @@ class TestSensorCapabilityGating:
         for entity in entities:
             description = getattr(entity, "entity_description", None)
             if description is not None and description.key in requires_mqtt_keys:
-                assert getattr(entity, "_attr_entity_registry_enabled_default", True) is True
+                if description.key in OPTIONAL_POWER_DIAGNOSTIC_SENSOR_KEYS:
+                    assert entity.entity_registry_enabled_default is False
+                else:
+                    # Preserve the original capability-gating assertion: a
+                    # confirmed model must not dynamically disable ordinary
+                    # MQTT sensors. Individual descriptions may still be
+                    # intentionally optional for unrelated product reasons.
+                    assert (
+                        getattr(
+                            entity,
+                            "_attr_entity_registry_enabled_default",
+                            True,
+                        )
+                        is True
+                    )
 
     def test_unconfirmed_model_requires_mqtt_sensors_and_schedule_sensor_are_disabled_by_default(self):
         coordinator = _FakeCoordinator(
@@ -290,6 +340,15 @@ class TestSensorCapabilityGating:
         assert requires_mqtt_entities
         for entity in requires_mqtt_entities:
             assert entity._attr_entity_registry_enabled_default is False
+
+        pv_entities = [
+            entity
+            for entity in requires_mqtt_entities
+            if entity.entity_description.key in PV_INPUT_SENSOR_KEYS
+        ]
+        assert {entity.entity_description.key for entity in pv_entities} == (
+            PV_INPUT_SENSOR_KEYS
+        )
 
         schedule_entities = [e for e in entities if isinstance(e, JackeryScheduleSensor)]
         assert len(schedule_entities) == 1

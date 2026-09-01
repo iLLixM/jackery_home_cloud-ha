@@ -204,7 +204,7 @@ class _JackeryMqttNumberEntity(CoordinatorEntity[JackeryHomeCloudCoordinator], N
 class JackeryDischargeLimitSocNumber(_JackeryMqttNumberEntity):
     """Minimum battery SOC below which discharging should stop. Discharge setting range according to android app is from 5% to 49%"""
 
-    _attr_name = "Discharge limit"
+    _attr_translation_key = "discharge_limit_soc"
     _attr_icon = "mdi:battery-charging-low"
     _attr_native_min_value = 5
     _attr_native_max_value = 49
@@ -225,7 +225,7 @@ class JackeryDischargeLimitSocNumber(_JackeryMqttNumberEntity):
 class JackeryChargeLimitSocNumber(_JackeryMqttNumberEntity):
     """Maximum battery SOC above which charging should stop. Android app allows mimimum value of 50%"""
 
-    _attr_name = "Charge limit"
+    _attr_translation_key = "charge_limit_soc"
     _attr_icon = "mdi:battery-charging-high"
     _attr_native_min_value = 50
     _attr_native_max_value = 100
@@ -246,7 +246,7 @@ class JackeryChargeLimitSocNumber(_JackeryMqttNumberEntity):
 class JackeryFeedPowerLimitNumber(_JackeryMqttNumberEntity):
     """Maximum feed-in power."""
 
-    _attr_name = "Feed-in power limit"
+    _attr_translation_key = "feed_power_limit"
     _attr_icon = "mdi:current-ac"
     _attr_native_min_value = 0
     _attr_native_max_value = MQTT_EMS_FEED_POWER_LIMIT_MAX_W

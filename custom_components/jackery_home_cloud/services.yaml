@@ -1,17 +1,10 @@
 set_charge_window:
-  name: Set charge window
-  description: >-
-    Configure one of up to 10 scheduled charge windows. Only takes effect
-    while work mode is set to "Time of use". Experimental:
-    reverse engineered from live traffic, not officially documented.
   target:
     entity:
       integration: jackery_home_cloud
       domain: sensor
   fields:
     slot:
-      name: Slot
-      description: Which charge window slot to set (0-9).
       required: true
       example: 0
       selector:
@@ -20,39 +13,23 @@ set_charge_window:
           max: 9
           mode: box
     start:
-      name: Start time
-      description: >-
-        When the charge window begins, in 24-hour HH:MM format. The device
-        only stores hour/minute resolution, so any seconds are ignored.
       required: true
       example: "06:15:00"
       selector:
         time:
     end:
-      name: End time
-      description: >-
-        When the charge window ends, in 24-hour HH:MM format. The device
-        only stores hour/minute resolution, so any seconds are ignored. The
-        schedule repeats every day; there is no day-of-week selection.
       required: true
       example: "07:15:00"
       selector:
         time:
 
 set_discharge_window:
-  name: Set discharge window
-  description: >-
-    Configure one of up to 10 scheduled discharge windows. Only takes effect
-    while work mode is set to "Time of use". Experimental:
-    reverse engineered from live traffic, not officially documented.
   target:
     entity:
       integration: jackery_home_cloud
       domain: sensor
   fields:
     slot:
-      name: Slot
-      description: Which discharge window slot to set (0-9).
       required: true
       example: 0
       selector:
@@ -61,37 +38,23 @@ set_discharge_window:
           max: 9
           mode: box
     start:
-      name: Start time
-      description: >-
-        When the discharge window begins, in 24-hour HH:MM format. The
-        device only stores hour/minute resolution, so any seconds are
-        ignored.
       required: true
       example: "07:15:00"
       selector:
         time:
     end:
-      name: End time
-      description: >-
-        When the discharge window ends, in 24-hour HH:MM format. The device
-        only stores hour/minute resolution, so any seconds are ignored. The
-        schedule repeats every day; there is no day-of-week selection.
       required: true
       example: "08:15:00"
       selector:
         time:
 
 clear_charge_window:
-  name: Clear charge window
-  description: Remove one of the scheduled charge windows.
   target:
     entity:
       integration: jackery_home_cloud
       domain: sensor
   fields:
     slot:
-      name: Slot
-      description: Which charge window slot to clear (0-9).
       required: true
       example: 0
       selector:
@@ -101,16 +64,12 @@ clear_charge_window:
           mode: box
 
 clear_discharge_window:
-  name: Clear discharge window
-  description: Remove one of the scheduled discharge windows.
   target:
     entity:
       integration: jackery_home_cloud
       domain: sensor
   fields:
     slot:
-      name: Slot
-      description: Which discharge window slot to clear (0-9).
       required: true
       example: 0
       selector:

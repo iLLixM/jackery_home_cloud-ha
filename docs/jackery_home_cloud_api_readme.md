@@ -278,9 +278,9 @@ Observed broker configuration:
 - The EMS battery-power value is expected to represent system-level battery
   power, including additional battery packs where supported, but broader model
   validation is still useful.
-- The direction/sign logic of some derived power values, especially AC main
-  power, is based on observed meter relationships and may require further
-  validation across operating modes.
+- PCS active power L1 is used directly as the fresh MQTT source for AC main
+  power after validation against an independent meter on the tested systems.
+  Its semantics may still require validation across other models or firmware.
 - Writable controls can change real device behavior and should be used with
   appropriate care.
 - Debug logs and captured MQTT payloads may contain device identifiers,

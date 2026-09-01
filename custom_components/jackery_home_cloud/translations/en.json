@@ -132,20 +132,100 @@
   },
   "entity": {
     "sensor": {
-      "battery_count": {
-        "name": "Battery count"
-      },
-      "ac_output_energy_in": {
-        "name": "AC-Output energy in"
-      },
-      "ac_output_energy_out": {
-        "name": "AC-Output energy out"
-      },
-      "eps_load_power_inverted": {
-        "name": "AC-socket power inverted"
-      },
-      "total_battery_capacity": {
-        "name": "Total battery capacity"
+      "total_charge_amount": {"name": "Total charge amount"},
+      "co2_saved": {"name": "CO2 saved"},
+      "grid_power": {"name": "Grid power"},
+      "ac_main_power": {"name": "AC main power"},
+      "pcs_active_power_l1": {"name": "PCS active power L1"},
+      "pcs_apparent_power": {"name": "PCS apparent power"},
+      "pcs_active_power": {"name": "PCS active power"},
+      "ems_other_load_power_l1": {"name": "EMS other load power L1"},
+      "ems_on_grid_power": {"name": "EMS on-grid power"},
+      "battery_soc": {"name": "Battery SOC"},
+      "battery_power": {"name": "Battery power"},
+      "battery_power_bms1": {"name": "Battery power BMS1"},
+      "bms1_temperature_ambient": {"name": "BMS1 ambient temperature"},
+      "bms1_temperature_avg_cell": {"name": "BMS1 average cell temperature"},
+      "battery_energy_remaining": {"name": "Battery energy remaining"},
+      "pv1_power": {"name": "PV1 power"},
+      "pv2_power": {"name": "PV2 power"},
+      "pv_power": {"name": "PV power"},
+      "eps_load_power": {"name": "AC-socket power"},
+      "eps_load_power_inverted": {"name": "AC-socket power inverted"},
+      "other_load_power": {"name": "Home-supply power"},
+      "solar_energy_generated_today": {"name": "Solar energy generated today"},
+      "battery_energy_charged_today": {"name": "Battery charged today"},
+      "battery_energy_discharged_today": {"name": "Battery discharged today"},
+      "battery_energy_charged_total": {"name": "Battery charged"},
+      "battery_energy_discharged_total": {"name": "Battery discharged"},
+      "ac_output_energy_in": {"name": "AC-Output energy in"},
+      "ac_output_energy_out": {"name": "AC-Output energy out"},
+      "grid_energy_exported_today": {"name": "Grid energy exported today"},
+      "grid_energy_imported_today": {"name": "Grid energy imported today"},
+      "pv1_energy_today": {"name": "PV1 energy today"},
+      "pv2_energy_today": {"name": "PV2 energy today"},
+      "pv1_energy_total": {"name": "PV1 energy"},
+      "pv2_energy_total": {"name": "PV2 energy"},
+      "pv_energy_total": {"name": "PV energy total"},
+      "on_grid_energy_exported_today": {"name": "On-grid energy exported today"},
+      "battery_count": {"name": "Battery count"},
+      "total_battery_capacity": {"name": "Total battery capacity"},
+      "device_connection": {"name": "Device connection"},
+      "mqtt_connection_status": {"name": "MQTT connection status"},
+      "mqtt_message_count": {"name": "MQTT message count"},
+      "mqtt_last_topic": {"name": "MQTT last topic"},
+      "mqtt_last_message_at": {"name": "MQTT last message at"},
+      "charge_discharge_schedule": {"name": "Charge/discharge schedule"}
+    },
+    "switch": {
+      "ac_output": {"name": "AC output"},
+      "standby": {"name": "Standby"},
+      "auto_standby": {"name": "Auto standby"}
+    },
+    "select": {
+      "work_mode": {"name": "Work mode"},
+      "output_power_limit": {"name": "Grid output power limit"}
+    },
+    "number": {
+      "discharge_limit_soc": {"name": "Discharge limit"},
+      "charge_limit_soc": {"name": "Charge limit"},
+      "feed_power_limit": {"name": "Feed-in power limit"}
+    },
+    "button": {
+      "reboot_device": {"name": "Reboot device"}
+    }
+  },
+  "services": {
+    "set_charge_window": {
+      "name": "Set charge window",
+      "description": "Configure one of up to 10 scheduled charge windows. Only takes effect while work mode is set to Time of use.",
+      "fields": {
+        "slot": {"name": "Slot", "description": "Charge window slot to set (0-9)."},
+        "start": {"name": "Start time", "description": "Start in 24-hour HH:MM format; seconds are ignored."},
+        "end": {"name": "End time", "description": "End in 24-hour HH:MM format; seconds are ignored and the schedule repeats daily."}
+      }
+    },
+    "set_discharge_window": {
+      "name": "Set discharge window",
+      "description": "Configure one of up to 10 scheduled discharge windows. Only takes effect while work mode is set to Time of use.",
+      "fields": {
+        "slot": {"name": "Slot", "description": "Discharge window slot to set (0-9)."},
+        "start": {"name": "Start time", "description": "Start in 24-hour HH:MM format; seconds are ignored."},
+        "end": {"name": "End time", "description": "End in 24-hour HH:MM format; seconds are ignored and the schedule repeats daily."}
+      }
+    },
+    "clear_charge_window": {
+      "name": "Clear charge window",
+      "description": "Remove one of the scheduled charge windows.",
+      "fields": {
+        "slot": {"name": "Slot", "description": "Charge window slot to clear (0-9)."}
+      }
+    },
+    "clear_discharge_window": {
+      "name": "Clear discharge window",
+      "description": "Remove one of the scheduled discharge windows.",
+      "fields": {
+        "slot": {"name": "Slot", "description": "Discharge window slot to clear (0-9)."}
       }
     }
   }

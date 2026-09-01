@@ -129,6 +129,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async def _async_poll_totals_live_meters(_now) -> None:
                 await coordinator.async_request_totals_live_meter_values()
 
+            async def _async_poll_slow_bms1_live_meters(_now) -> None:
+                await coordinator.async_request_slow_bms1_live_meter_values()
+
             async def _async_poll_config_live_meters(_now) -> None:
                 await coordinator.async_request_config_live_meter_values()
 
@@ -143,6 +146,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 async_track_time_interval(
                     hass,
                     _async_poll_totals_live_meters,
+                    timedelta(seconds=MQTT_TOTALS_POLL_INTERVAL_SECONDS),
+                )
+            )
+            entry.async_on_unload(
+                async_track_time_interval(
+                    hass,
+                    _async_poll_slow_bms1_live_meters,
                     timedelta(seconds=MQTT_TOTALS_POLL_INTERVAL_SECONDS),
                 )
             )

@@ -16,7 +16,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfApparentPower,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform
@@ -62,10 +68,10 @@ class JackeryMetricDescription(SensorEntityDescription):
     entity_category: EntityCategory | None = None
     requires_mqtt: bool = False
 
-
 SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     JackeryMetricDescription(
         key="total_charge_amount",
+        translation_key="total_charge_amount",
         name="Total charge amount",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -76,6 +82,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="co2_saved",
+        translation_key="co2_saved",
         name="CO2 saved",
         native_unit_of_measurement="kg",
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -85,6 +92,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="grid_power",
+        translation_key="grid_power",
         name="Grid power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -105,13 +113,13 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="ac_main_power",
+        translation_key="ac_main_power",
         name="AC main power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        # Prefers the MQTT-sourced value when fresh, falling back to REST.
-        # See MQTT_PCS_AC_MAIN_POWER_METER_ID in const.py for the raw
-        # meter's sign convention.
+        # Uses the externally validated signed PCS active-power-L1 value when
+        # fresh, falling back to REST acMainPower otherwise.
         value_fn=lambda bundle: _mqtt_or_rest(
             bundle,
             "ac_main_power_mqtt",
@@ -119,8 +127,86 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
+    # Raw MQTT meter retained for direct comparison with the established
+    # AC-main entity, which uses the same value while it remains fresh.
+    JackeryMetricDescription(
+        key="pcs_active_power_l1",
+        translation_key="pcs_active_power_l1",
+        name="PCS active power L1",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("pcs_active_power_l1_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pcs_apparent_power",
+        translation_key="pcs_apparent_power",
+        name="PCS apparent power",
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("pcs_apparent_power_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pcs_active_power",
+        translation_key="pcs_active_power",
+        name="PCS active power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("pcs_active_power_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ems_other_load_power_l1",
+        translation_key="ems_other_load_power_l1",
+        name="EMS other load power L1",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("ems_other_load_power_l1_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="ems_on_grid_power",
+        translation_key="ems_on_grid_power",
+        name="EMS on-grid power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        value_fn=lambda bundle: _coerce_float(
+            bundle.get("ems_on_grid_power_mqtt")
+        ),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
     JackeryMetricDescription(
         key="battery_soc",
+        translation_key="battery_soc",
         name="Battery SOC",
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
@@ -140,6 +226,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_power",
+        translation_key="battery_power",
         name="Battery power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -153,6 +240,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_power_bms1",
+        translation_key="battery_power_bms1",
         name="Battery power BMS1",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -165,7 +253,35 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
+        key="bms1_temperature_ambient",
+        translation_key="bms1_temperature_ambient",
+        name="BMS1 ambient temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        requires_mqtt=True,
+        # Ambient temperature around/in the battery pack. Confirmed via MQTT traces.
+        # PROPERTY_MAP: "33619969": "HB-BMS-MODEL_ambT"
+        value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_ambient_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="bms1_temperature_avg_cell",
+        translation_key="bms1_temperature_avg_cell",
+        name="BMS1 average cell temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        requires_mqtt=True,
+        # Average cell temperature of the battery pack. Confirmed via MQTT traces.
+        # PROPERTY_MAP: "33618945": "HB-BMS-MODEL_avgCellT"
+        value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_avg_cell_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
         key="battery_energy_remaining",
+        translation_key="battery_energy_remaining",
         name="Battery energy remaining",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY_STORAGE,
@@ -180,7 +296,36 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         ),
     ),
     JackeryMetricDescription(
+        key="pv1_power",
+        translation_key="pv1_power",
+        name="PV1 power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:solar-power",
+        requires_mqtt=True,
+        # Physical PV input 1, confirmed via observed MQTT PROPERTY_MAP:
+        # "50490369": "HB-PCS-MODEL_pvP1".
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv1_power_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
+        key="pv2_power",
+        translation_key="pv2_power",
+        name="PV2 power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:solar-power",
+        requires_mqtt=True,
+        # Physical PV input 2, confirmed via observed MQTT PROPERTY_MAP:
+        # "50490370": "HB-PCS-MODEL_pvP2".
+        value_fn=lambda bundle: _coerce_float(bundle.get("pv2_power_mqtt")),
+        unique_id_fn=lambda system_id, _: f"system_{system_id}",
+    ),
+    JackeryMetricDescription(
         key="pv_power",
+        translation_key="pv_power",
         name="PV power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -201,6 +346,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="eps_load_power",
+        translation_key="eps_load_power",
         name="AC-socket power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -245,6 +391,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="other_load_power",
+        translation_key="other_load_power",
         name="Home-supply power",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -273,6 +420,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="solar_energy_generated_today",
+        translation_key="solar_energy_generated_today",
         name="Solar energy generated today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -283,6 +431,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_energy_charged_today",
+        translation_key="battery_energy_charged_today",
         name="Battery charged today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -293,6 +442,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_energy_discharged_today",
+        translation_key="battery_energy_discharged_today",
         name="Battery discharged today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -303,6 +453,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_energy_charged_total",
+        translation_key="battery_energy_charged_total",
         name="Battery charged",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -314,6 +465,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_energy_discharged_total",
+        translation_key="battery_energy_discharged_total",
         name="Battery discharged",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -349,6 +501,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="grid_energy_exported_today",
+        translation_key="grid_energy_exported_today",
         name="Grid energy exported today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -359,6 +512,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="grid_energy_imported_today",
+        translation_key="grid_energy_imported_today",
         name="Grid energy imported today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -369,6 +523,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="pv1_energy_today",
+        translation_key="pv1_energy_today",
         name="PV1 energy today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -379,6 +534,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="pv2_energy_today",
+        translation_key="pv2_energy_today",
         name="PV2 energy today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -389,6 +545,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="pv1_energy_total",
+        translation_key="pv1_energy_total",
         name="PV1 energy",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -400,6 +557,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="pv2_energy_total",
+        translation_key="pv2_energy_total",
         name="PV2 energy",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -411,6 +569,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="pv_energy_total",
+        translation_key="pv_energy_total",
         name="PV energy total",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -422,6 +581,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="on_grid_energy_exported_today",
+        translation_key="on_grid_energy_exported_today",
         name="On-grid energy exported today",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
@@ -434,6 +594,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="battery_count",
+        translation_key="battery_count",
         name="Battery count",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda bundle: bundle.get("battery_count"),
@@ -441,6 +602,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="total_battery_capacity",
+        translation_key="total_battery_capacity",
         name="Total battery capacity",
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -451,6 +613,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="device_connection",
+        translation_key="device_connection",
         name="Device connection",
         entity_category=EntityCategory.DIAGNOSTIC,
         requires_mqtt=True,
@@ -459,6 +622,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="mqtt_connection_status",
+        translation_key="mqtt_connection_status",
         name="MQTT connection status",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "connection_state"),
@@ -467,6 +631,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="mqtt_message_count",
+        translation_key="mqtt_message_count",
         name="MQTT message count",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
@@ -477,6 +642,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="mqtt_last_topic",
+        translation_key="mqtt_last_topic",
         name="MQTT last topic",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
@@ -486,6 +652,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
     ),
     JackeryMetricDescription(
         key="mqtt_last_message_at",
+        translation_key="mqtt_last_message_at",
         name="MQTT last message at",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -656,7 +823,6 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         bundle = self._system_bundle or {}
         unique_source = description.unique_id_fn(system_id, bundle)
         self._attr_unique_id = f"{unique_source}_{description.key}"
-        self._attr_name = description.name
         self._attr_entity_category = description.entity_category
         # Initialized from the recorder and subsequently advanced by every
         # valid live value. MQTT-only TOTAL_INCREASING sensors can therefore
@@ -722,6 +888,7 @@ class JackeryScheduleSensor(JackeryBaseSensor):
 
     _attr_icon = "mdi:calendar-clock"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "charge_discharge_schedule"
 
     def __init__(
         self,
@@ -732,7 +899,6 @@ class JackeryScheduleSensor(JackeryBaseSensor):
         """Initialize the schedule sensor."""
         super().__init__(coordinator, system_id)
         self._attr_unique_id = f"system_{system_id}_charge_discharge_schedule"
-        self._attr_name = "Charge/discharge schedule"
 
     @property
     def native_value(self) -> str | None:

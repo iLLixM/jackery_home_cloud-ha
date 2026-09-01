@@ -33,10 +33,17 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "co2_saved",
         "grid_power",
         "ac_main_power",
+        "pcs_active_power_l1",
+        "pcs_apparent_power",
+        "pcs_active_power",
+        "ems_other_load_power_l1",
+        "ems_on_grid_power",
         "battery_soc",
         "battery_power",
         "battery_power_bms1",
         "battery_energy_remaining",
+        "pv1_power",
+        "pv2_power",
         "pv_power",
         "eps_load_power",
         "eps_load_power_inverted",
@@ -63,6 +70,8 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "mqtt_message_count",
         "mqtt_last_topic",
         "mqtt_last_message_at",
+        "bms1_temperature_ambient",
+        "bms1_temperature_avg_cell",
     }
 )
 
@@ -75,10 +84,19 @@ SIMPLE_UNIQUE_ID_KEYS = frozenset(
         "total_charge_amount",
         "co2_saved",
         "ac_main_power",
+        "pcs_active_power_l1",
+        "pcs_apparent_power",
+        "pcs_active_power",
+        "ems_other_load_power_l1",
+        "ems_on_grid_power",
         "battery_power",
         "battery_power_bms1",
+        "pv1_power",
+        "pv2_power",
         "ac_output_energy_in",
         "ac_output_energy_out",
+        "bms1_temperature_ambient",
+        "bms1_temperature_avg_cell",
     }
 )
 
@@ -135,6 +153,25 @@ def test_battery_power_and_bms1_are_distinct_entities():
     assert battery_power_bms1.value_fn({"battery_power_mqtt": 123}) is None
 
 
+def test_pv_input_power_sensors_are_distinct_mqtt_measurements():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    pv1 = descriptions["pv1_power"]
+    pv2 = descriptions["pv2_power"]
+
+    for description in (pv1, pv2):
+        assert description.requires_mqtt is True
+        assert description.entity_registry_enabled_default is True
+        assert description.native_unit_of_measurement == "W"
+        assert description.device_class == "power"
+        assert description.state_class == "measurement"
+        assert description.entity_category is None
+
+    assert pv1.value_fn({"pv1_power_mqtt": "123"}) == 123.0
+    assert pv2.value_fn({"pv2_power_mqtt": "456"}) == 456.0
+    assert pv1.value_fn({"pv2_power_mqtt": 456.0}) is None
+    assert pv2.value_fn({"pv1_power_mqtt": 123.0}) is None
+
+
 def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():
     descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
 
@@ -145,6 +182,74 @@ def test_ac_output_energy_in_sensor_is_mqtt_only_cumulative_energy_counter():
     assert energy_in_description.device_class == "energy"
     assert energy_in_description.state_class == "total_increasing"
     assert energy_in_description.value_fn({"ac_output_energy_in": "12.345"}) == 12.345
+
+
+def test_validated_l1_sensor_preserves_raw_value_as_optional_diagnostic():
+    """Expose the validated AC-main source independently for diagnostics."""
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    description = descriptions["pcs_active_power_l1"]
+
+    assert description.requires_mqtt is True
+    assert description.entity_registry_enabled_default is False
+    assert description.entity_category == "diagnostic"
+    assert description.native_unit_of_measurement == "W"
+    assert description.device_class == "power"
+    assert description.state_class == "measurement"
+    assert description.value_fn({"pcs_active_power_l1_mqtt": "-8.5"}) == -8.5
+    assert description.value_fn({}) is None
+
+
+def test_experimental_power_sensors_preserve_raw_values_and_are_optional_diagnostics():
+    """Keep the remaining validation candidates as independent diagnostics."""
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    expected = {
+        "pcs_apparent_power": (
+            "pcs_apparent_power_mqtt",
+            "VA",
+            "apparent_power",
+        ),
+        "pcs_active_power": ("pcs_active_power_mqtt", "W", "power"),
+        "ems_other_load_power_l1": (
+            "ems_other_load_power_l1_mqtt",
+            "W",
+            "power",
+        ),
+        "ems_on_grid_power": ("ems_on_grid_power_mqtt", "W", "power"),
+    }
+
+    for sensor_key, (bundle_key, unit, device_class) in expected.items():
+        description = descriptions[sensor_key]
+        assert description.requires_mqtt is True
+        assert description.entity_registry_enabled_default is False
+        assert description.entity_category == "diagnostic"
+        assert description.native_unit_of_measurement == unit
+        assert description.device_class == device_class
+        assert description.state_class == "measurement"
+        assert description.value_fn({bundle_key: "-8.5"}) == -8.5
+        assert description.value_fn({}) is None
+
+
+def test_ac_main_sensor_preserves_identity_and_mqtt_rest_precedence():
+    descriptions = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
+    main_description = descriptions["ac_main_power"]
+
+    assert main_description.key == "ac_main_power"
+    assert main_description.translation_key == "ac_main_power"
+    assert main_description.unique_id_fn("sys123", {}) == "system_sys123"
+    assert main_description.native_unit_of_measurement == "W"
+    assert main_description.device_class == "power"
+    assert main_description.state_class == "measurement"
+    rest_bundle = _nest(
+        ("monitor", "energyFlowChartVO", "acMainVO", "acMainPower"),
+        -120.0,
+    )
+    assert main_description.value_fn(rest_bundle) == -120.0
+    assert (
+        main_description.value_fn(
+            {**rest_bundle, "ac_main_power_mqtt": -123.0}
+        )
+        == -123.0
+    )
 
 
 def test_ac_output_energy_out_sensor_is_mqtt_only_cumulative_energy_counter():
