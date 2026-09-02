@@ -16,7 +16,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from custom_components.jackery_home_cloud import button, number, select, switch
+from custom_components.jackery_home_cloud import (
+    button,
+    number,
+    select,
+    sensor as sensor_platform,
+    switch,
+)
 from custom_components.jackery_home_cloud.const import (
     CONF_ENABLE_MQTT,
     MQTT_EMS_AUTO_STANDBY_METER_ID,
@@ -64,6 +70,7 @@ class _FakeCoordinator:
         # assertions below already pin.
         self._model_confirmed = model_confirmed
         self._unsupported_meter_ids = unsupported_meter_ids
+        self.listeners: list = []
 
     def is_mqtt_system(self, system_id: str) -> bool:
         return self._mqtt_system_id is not None and str(system_id) == self._mqtt_system_id
@@ -76,9 +83,29 @@ class _FakeCoordinator:
             return False
         return meter_id not in self._unsupported_meter_ids
 
+    def async_add_listener(self, listener):
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
 
 def _bundle(serial: str) -> dict:
     return {"main_device_serial": serial}
+
+
+def _identity_bundle(device_no: str | None, *, include_sources: bool = True) -> dict:
+    bundle = _bundle("SN1")
+    if not include_sources:
+        return bundle
+    bundle["monitor"] = {
+        "energyFlowChartVO": {
+            "energyFlowCTVO": {"deviceNo": device_no},
+            "emsGwVO": {"deviceNo": device_no},
+            "pvInfo": {"deviceNo": device_no},
+            "acInfo": {"deviceNo": device_no},
+            "otherLoadVO": {"deviceNo": device_no},
+        }
+    }
+    return bundle
 
 
 def _entry(*, enable_mqtt: bool, mqtt_client, coordinator) -> SimpleNamespace:
@@ -148,6 +175,66 @@ class TestMqttPlatformsGating:
 
 
 class TestSensorBuildEntitiesGating:
+    def test_metric_unique_ids_never_depend_on_rest_device_number(self):
+        expected: dict[str, str] | None = None
+        for bundle in (
+            _identity_bundle(None, include_sources=False),
+            _identity_bundle(None),
+            _identity_bundle(""),
+            _identity_bundle("EMS_A"),
+            _identity_bundle("EMS_B"),
+        ):
+            coordinator = _FakeCoordinator(
+                {"systems": {PRIMARY: bundle}},
+                mqtt_system_id=PRIMARY,
+            )
+            identities = {
+                entity.entity_description.key: entity.unique_id
+                for entity in _build_entities(coordinator, mqtt_enabled=True)
+                if getattr(entity, "entity_description", None) is not None
+            }
+            if expected is None:
+                expected = identities
+            assert identities == expected
+            assert all(
+                unique_id == f"system_{PRIMARY}_{key}"
+                for key, unique_id in identities.items()
+            )
+
+    async def test_runtime_device_number_change_adds_no_duplicate_entities(self):
+        coordinator = _FakeCoordinator(
+            {
+                "systems": {
+                    PRIMARY: _identity_bundle(None, include_sources=False)
+                }
+            },
+            mqtt_system_id=PRIMARY,
+        )
+        unload_callbacks: list = []
+        entry = SimpleNamespace(
+            options={CONF_ENABLE_MQTT: False},
+            runtime_data=SimpleNamespace(coordinator=coordinator),
+            async_on_unload=unload_callbacks.append,
+        )
+        added_batches: list[list] = []
+
+        await sensor_platform.async_setup_entry(
+            None,
+            entry,
+            lambda entities: added_batches.append(list(entities)),
+        )
+        assert len(added_batches) == 1
+        initial_entities = added_batches[0]
+
+        for device_no in ("EMS_A", None, "EMS_B", "EMS_A"):
+            coordinator.data["systems"][PRIMARY] = _identity_bundle(device_no)
+            coordinator.listeners[0]()
+
+        assert len(added_batches) == 1
+        assert len({entity.unique_id for entity in initial_entities}) == len(
+            initial_entities
+        )
+
     def test_requires_mqtt_sensors_only_created_for_primary_system(self):
         coordinator = _FakeCoordinator(
             {"systems": {PRIMARY: _bundle("SN1"), SECONDARY: _bundle("SN2")}},
