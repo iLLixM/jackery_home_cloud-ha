@@ -40,6 +40,7 @@ from .const import (
     MQTT_EMS_DISCHARGE_WINDOW_METER_IDS,
 )
 from .coordinator import JackeryHomeCloudCoordinator, _validate_and_pad_schedule_raw
+from .entity_identity import sensor_unique_id
 
 PARALLEL_UPDATES = 0
 
@@ -58,13 +59,12 @@ MQTT_RESTORE_SENSOR_KEYS: set[str] = {
 class JackeryMetricDescription(SensorEntityDescription):
     """Description for a derived Jackery sensor.
 
-    The value callback receives the full system bundle. Existing sensors keep a
-    source-based unique id suffix so Home Assistant can migrate previously
-    created entities onto the new single-device-per-system model.
+    The value callback receives the full system bundle. Entity identity is
+    deliberately not configurable here: every metric sensor is scoped to its
+    stable Jackery system ID and description key.
     """
 
     value_fn: Callable[[dict[str, Any]], Any]
-    unique_id_fn: Callable[[str, dict[str, Any]], str]
     entity_category: EntityCategory | None = None
     requires_mqtt: bool = False
 
@@ -78,7 +78,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _coerce_float(bundle["monitor"].get("totalChargeAmount")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="co2_saved",
@@ -88,7 +87,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _coerce_float(bundle["monitor"].get("co2")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="grid_power",
@@ -106,10 +104,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
             "grid_power_mqtt",
             _safe_get(bundle, "monitor", "energyFlowChartVO", "gridVO", "gridPower"),
         ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "energyFlowCTVO", "deviceNo"),
-        ),
     ),
     JackeryMetricDescription(
         key="ac_main_power",
@@ -125,7 +119,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
             "ac_main_power_mqtt",
             _safe_get(bundle, "monitor", "energyFlowChartVO", "acMainVO", "acMainPower"),
         ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     # Raw MQTT meter retained for direct comparison with the established
     # AC-main entity, which uses the same value while it remains fresh.
@@ -142,7 +135,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(
             bundle.get("pcs_active_power_l1_mqtt")
         ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pcs_apparent_power",
@@ -157,7 +149,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(
             bundle.get("pcs_apparent_power_mqtt")
         ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pcs_active_power",
@@ -172,7 +163,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(
             bundle.get("pcs_active_power_mqtt")
         ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="ems_other_load_power_l1",
@@ -187,7 +177,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(
             bundle.get("ems_other_load_power_l1_mqtt")
         ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="ems_on_grid_power",
@@ -202,7 +191,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(
             bundle.get("ems_on_grid_power_mqtt")
         ),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_soc",
@@ -219,10 +207,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
             "battery_soc_mqtt",
             _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "soc"),
         ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "deviceNo"),
-        ),
     ),
     JackeryMetricDescription(
         key="battery_power",
@@ -236,7 +220,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # MQTT_EMS_BATTERY_POWER_METER_ID in const.py for the sign
         # convention.
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_mqtt")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_power_bms1",
@@ -250,7 +233,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # MQTT_BMS1_BATTERY_POWER_METER_ID in const.py for the sign
         # convention.
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_power_bms1_mqtt")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="bms1_temperature_ambient",
@@ -264,7 +246,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # Ambient temperature around/in the battery pack. Confirmed via MQTT traces.
         # PROPERTY_MAP: "33619969": "HB-BMS-MODEL_ambT"
         value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_ambient_mqtt")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="bms1_temperature_avg_cell",
@@ -277,7 +258,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # Average cell temperature of the battery pack. Confirmed via MQTT traces.
         # PROPERTY_MAP: "33618945": "HB-BMS-MODEL_avgCellT"
         value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_avg_cell_mqtt")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_energy_remaining",
@@ -289,10 +269,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=2,
         value_fn=lambda bundle: _coerce_float(
             _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "energyRemain")
-        ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "emsGwVO", "deviceNo"),
         ),
     ),
     JackeryMetricDescription(
@@ -307,7 +283,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # Physical PV input 1, confirmed via observed MQTT PROPERTY_MAP:
         # "50490369": "HB-PCS-MODEL_pvP1".
         value_fn=lambda bundle: _coerce_float(bundle.get("pv1_power_mqtt")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv2_power",
@@ -321,7 +296,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         # Physical PV input 2, confirmed via observed MQTT PROPERTY_MAP:
         # "50490370": "HB-PCS-MODEL_pvP2".
         value_fn=lambda bundle: _coerce_float(bundle.get("pv2_power_mqtt")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv_power",
@@ -339,10 +313,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
             "pv_power_mqtt",
             _safe_get(bundle, "monitor", "energyFlowChartVO", "pvInfo", "pvPower"),
         ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "pvInfo", "deviceNo"),
-        ),
     ),
     JackeryMetricDescription(
         key="eps_load_power",
@@ -359,10 +329,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
             bundle,
             "eps_load_power_mqtt",
             _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "epsLoadPower"),
-        ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "deviceNo"),
         ),
     ),
     JackeryMetricDescription(
@@ -383,10 +349,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
                 "eps_load_power_mqtt",
                 _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "epsLoadPower"),
             )
-        ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "acInfo", "deviceNo"),
         ),
     ),
     JackeryMetricDescription(
@@ -413,10 +375,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
                 "otherLoadPower",
             ),
         ),
-        unique_id_fn=lambda system_id, bundle: _unique_source_or_system(
-            system_id,
-            _safe_get(bundle, "monitor", "energyFlowChartVO", "otherLoadVO", "deviceNo"),
-        ),
     ),
     JackeryMetricDescription(
         key="solar_energy_generated_today",
@@ -427,7 +385,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _daily_energy(bundle, "solar_energy_generated_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_energy_charged_today",
@@ -438,7 +395,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=3,
         value_fn=lambda bundle: _daily_energy(bundle, "battery_energy_charged_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_energy_discharged_today",
@@ -449,7 +405,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=3,
         value_fn=lambda bundle: _daily_energy(bundle, "battery_energy_discharged_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_energy_charged_total",
@@ -461,7 +416,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_energy_charged_total")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_energy_discharged_total",
@@ -473,7 +427,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("battery_energy_discharged_total")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="ac_output_energy_in",
@@ -485,7 +438,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("ac_output_energy_in")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="ac_output_energy_out",
@@ -497,7 +449,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("ac_output_energy_out")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="grid_energy_exported_today",
@@ -508,7 +459,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _daily_energy(bundle, "grid_energy_exported_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="grid_energy_imported_today",
@@ -519,7 +469,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _daily_energy(bundle, "grid_energy_imported_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv1_energy_today",
@@ -530,7 +479,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _daily_energy(bundle, "pv1_energy_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv2_energy_today",
@@ -541,7 +489,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=2,
         value_fn=lambda bundle: _daily_energy(bundle, "pv2_energy_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv1_energy_total",
@@ -553,7 +500,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("pv1_energy_total")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv2_energy_total",
@@ -565,7 +511,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("pv2_energy_total")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="pv_energy_total",
@@ -577,7 +522,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=3,
         requires_mqtt=True,
         value_fn=lambda bundle: _coerce_float(bundle.get("pv_energy_total")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="on_grid_energy_exported_today",
@@ -590,7 +534,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda bundle: _daily_energy(bundle, "on_grid_energy_exported_today"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="battery_count",
@@ -598,7 +541,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         name="Battery count",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda bundle: bundle.get("battery_count"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="total_battery_capacity",
@@ -609,7 +551,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         suggested_display_precision=2,
         icon="mdi:battery-high",
         value_fn=lambda bundle: _coerce_float(bundle.get("total_battery_capacity_kwh")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="device_connection",
@@ -618,7 +559,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         requires_mqtt=True,
         value_fn=lambda bundle: bundle.get("device_connection"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="mqtt_connection_status",
@@ -626,7 +566,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         name="MQTT connection status",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "connection_state"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
         requires_mqtt=True,
     ),
     JackeryMetricDescription(
@@ -638,7 +577,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         requires_mqtt=True,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda bundle: _coerce_int(_safe_get(bundle, "mqtt_state", "message_count")),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="mqtt_last_topic",
@@ -648,7 +586,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         entity_registry_enabled_default=False,
         requires_mqtt=True,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "last_topic"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
     JackeryMetricDescription(
         key="mqtt_last_message_at",
@@ -659,7 +596,6 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         entity_registry_enabled_default=False,
         requires_mqtt=True,
         value_fn=lambda bundle: _safe_get(bundle, "mqtt_state", "last_message_at"),
-        unique_id_fn=lambda system_id, _: f"system_{system_id}",
     ),
 )
 
@@ -672,7 +608,7 @@ async def async_setup_entry(
     """Set up Jackery sensors from a config entry."""
     runtime = entry.runtime_data
     coordinator: JackeryHomeCloudCoordinator = runtime.coordinator
-    known_unique_ids: set[str] = set()
+    known_entity_keys: set[tuple[str, str]] = set()
     mqtt_enabled = bool(entry.options.get(CONF_ENABLE_MQTT, False))
 
     @callback
@@ -680,9 +616,10 @@ async def async_setup_entry(
         """Create sensors for all currently known systems."""
         new_entities: list[SensorEntity] = []
         for entity in _build_entities(coordinator, mqtt_enabled):
-            if entity.unique_id in known_unique_ids:
+            entity_key = _entity_runtime_key(entity)
+            if entity_key in known_entity_keys:
                 continue
-            known_unique_ids.add(entity.unique_id)
+            known_entity_keys.add(entity_key)
             new_entities.append(entity)
 
         if new_entities:
@@ -820,9 +757,7 @@ class JackeryMetricSensor(JackeryBaseSensor, RestoreEntity):
         """Initialize the metric sensor."""
         super().__init__(coordinator, system_id)
         self.entity_description = description
-        bundle = self._system_bundle or {}
-        unique_source = description.unique_id_fn(system_id, bundle)
-        self._attr_unique_id = f"{unique_source}_{description.key}"
+        self._attr_unique_id = sensor_unique_id(system_id, description.key)
         self._attr_entity_category = description.entity_category
         # Initialized from the recorder and subsequently advanced by every
         # valid live value. MQTT-only TOTAL_INCREASING sensors can therefore
@@ -1035,12 +970,14 @@ def _friendly_model_name(raw_model: Any) -> str:
     return f"{raw} ({friendly})"
 
 
-def _unique_source_or_system(system_id: str, source: Any) -> str:
-    """Keep stable unique ids for existing sensors when a source device exists."""
-    text = _safe_str(source)
-    if text:
-        return text
-    return f"system_{system_id}"
+def _entity_runtime_key(entity: SensorEntity) -> tuple[str, str]:
+    """Return the stable logical key used to deduplicate runtime entities."""
+    system_id = str(getattr(entity, "_system_id"))
+    description = getattr(entity, "entity_description", None)
+    key = getattr(description, "key", None)
+    if key is None:
+        key = entity.unique_id or type(entity).__name__
+    return system_id, str(key)
 
 
 def _daily_energy(bundle: Mapping[str, Any], key: str) -> float | None:

@@ -55,6 +55,13 @@ Each selected Jackery system is represented as one device in Home Assistant.
 
 This keeps the integration understandable and avoids unnecessary clutter from multiple internal cloud-side components that are not independently modeled by the integration.
 
+Metric sensor identities are scoped deterministically to that system using
+`system_<system_id>_<sensor_key>`. They do not depend on optional REST device
+identifiers or on the current availability of REST or MQTT measurements.
+During setup, the integration reconciles legacy source-scoped sensor entries
+and removes confirmed duplicates while preserving the oldest established
+entity and its entity ID where possible.
+
 For accounts with multiple systems, REST entities remain available for every selected system. The current MQTT implementation is intentionally limited to one explicitly user-selected system per config entry.
 
 ### Live cloud data
