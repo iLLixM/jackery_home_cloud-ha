@@ -33,13 +33,14 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import JackeryHomeCloudCoordinator
+from .entity_migration import async_reconcile_sensor_entity_registry
 from .exceptions import JackeryHomeCryptoError, JackeryHomeMqttError
 from .mqtt_client import JackeryMqttClient
 
 _LOGGER = logging.getLogger(__name__)
 
 _CONFIG_ENTRY_VERSION = 1
-_CONFIG_ENTRY_MINOR_VERSION = 5
+_CONFIG_ENTRY_MINOR_VERSION = 6
 
 
 @dataclass(slots=True)
@@ -60,6 +61,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     runtime = JackeryHomeCloudRuntime(client=client, coordinator=coordinator)
     entry.runtime_data = runtime
+
+    # Repair released source-scoped sensor identities before platforms create
+    # entities. This intentionally runs on every setup so interrupted or
+    # previously ambiguous registry states can recover when enough mapping
+    # information becomes available.
+    async_reconcile_sensor_entity_registry(
+        hass,
+        entry,
+        coordinator.data.get("systems", {}),
+    )
 
     if entry.options.get(CONF_ENABLE_MQTT):
         if coordinator.mqtt_system is None:

@@ -3,10 +3,10 @@ stability).
 
 These import `sensor.py` directly and inspect `SYSTEM_SENSOR_DESCRIPTIONS`
 as plain data - no `hass` fixture, coordinator, or config entry needed,
-since `value_fn`/`unique_id_fn` are pure callables over a plain dict
-bundle. This directly targets the historical regression from PR #8: a
+since every `value_fn` is a pure callable over a plain dict bundle. This
+directly targets the historical regression from PR #8: a
 `key` rename on a shipped entity silently changes its `unique_id`
-(`f"{unique_source}_{description.key}"` in `JackeryMetricSensor.__init__`),
+(`system_<system_id>_<description.key>` in `JackeryMetricSensor.__init__`),
 orphaning the old entity and losing history/automations for every
 upgrading user.
 """
@@ -16,14 +16,15 @@ from __future__ import annotations
 from typing import Any
 
 from custom_components.jackery_home_cloud.diagnostics import _PROTOCOL_VALIDATION_METERS
+from custom_components.jackery_home_cloud.entity_identity import sensor_unique_id
 from custom_components.jackery_home_cloud.sensor import (
     SYSTEM_SENSOR_DESCRIPTIONS,
     _mqtt_or_rest,
 )
 
 # Pinned snapshot of every shipped sensor `key`. This is the "vocabulary"
-# behind `unique_id = f"{unique_source}_{key}"` for every simple
-# (non-per-source) sensor. Any diff here (add/remove/rename) is a
+# behind `unique_id = system_<system_id>_<key>` for every metric sensor.
+# Any diff here (add/remove/rename) is a
 # deliberate change that must be reviewed for unique_id/migration impact -
 # do not "fix" this test by blindly re-pinning without checking whether the
 # change breaks upgrades for already-shipped entities.
@@ -75,32 +76,6 @@ EXPECTED_SENSOR_KEYS = frozenset(
     }
 )
 
-# Sensors whose `unique_id_fn` is the trivial `f"system_{system_id}"`
-# regardless of bundle content - these are the entities where a `key`
-# rename is *guaranteed* to change unique_id for every user (no
-# source-device fallback to consider).
-SIMPLE_UNIQUE_ID_KEYS = frozenset(
-    {
-        "total_charge_amount",
-        "co2_saved",
-        "ac_main_power",
-        "pcs_active_power_l1",
-        "pcs_apparent_power",
-        "pcs_active_power",
-        "ems_other_load_power_l1",
-        "ems_on_grid_power",
-        "battery_power",
-        "battery_power_bms1",
-        "pv1_power",
-        "pv2_power",
-        "ac_output_energy_in",
-        "ac_output_energy_out",
-        "bms1_temperature_ambient",
-        "bms1_temperature_avg_cell",
-    }
-)
-
-
 def test_all_sensor_keys_are_unique():
     keys = [d.key for d in SYSTEM_SENSOR_DESCRIPTIONS]
     duplicates = {key for key in keys if keys.count(key) > 1}
@@ -121,17 +96,13 @@ def test_sensor_key_snapshot_matches_pinned_set():
     )
 
 
-def test_simple_unique_id_fn_produces_system_scoped_id():
-    """For keys with a trivial unique_id_fn, unique_id must be exactly
-    f"system_{system_id}_{key}" regardless of bundle contents.
-    """
-    descriptions_by_key = {d.key: d for d in SYSTEM_SENSOR_DESCRIPTIONS}
-    for key in SIMPLE_UNIQUE_ID_KEYS:
-        description = descriptions_by_key[key]
-        unique_source = description.unique_id_fn("sys123", {})
-        assert unique_source == "system_sys123"
-        unique_id = f"{unique_source}_{description.key}"
-        assert unique_id == f"system_sys123_{key}"
+def test_every_metric_sensor_has_one_system_scoped_identity_formula():
+    """Payload fields cannot customize or destabilize metric identities."""
+    for description in SYSTEM_SENSOR_DESCRIPTIONS:
+        assert not hasattr(description, "unique_id_fn")
+        assert sensor_unique_id("sys123", description.key) == (
+            f"system_sys123_{description.key}"
+        )
 
 
 def test_battery_power_and_bms1_are_distinct_entities():
@@ -235,7 +206,9 @@ def test_ac_main_sensor_preserves_identity_and_mqtt_rest_precedence():
 
     assert main_description.key == "ac_main_power"
     assert main_description.translation_key == "ac_main_power"
-    assert main_description.unique_id_fn("sys123", {}) == "system_sys123"
+    assert sensor_unique_id("sys123", main_description.key) == (
+        "system_sys123_ac_main_power"
+    )
     assert main_description.native_unit_of_measurement == "W"
     assert main_description.device_class == "power"
     assert main_description.state_class == "measurement"

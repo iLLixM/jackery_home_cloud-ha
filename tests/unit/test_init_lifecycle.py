@@ -15,7 +15,7 @@ machinery that already has its own dedicated test coverage.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -89,7 +89,7 @@ def _entry(*, options: dict | None = None) -> MockConfigEntry:
         data={CONF_ACCOUNT: "user@example.com", CONF_PASSWORD: "pw", CONF_PHONE_UID: "ha-1"},
         options=options or {CONF_ENABLE_MQTT: False, CONF_MQTT_SYSTEM_ID: None},
         version=1,
-        minor_version=5,
+        minor_version=6,
     )
 
 
@@ -115,6 +115,38 @@ class TestAsyncSetupEntryMqttDisabled:
         assert entry.runtime_data.mqtt_client is None
         forward.assert_awaited_once()
         assert _FakeMqttClient.instances == []
+
+    async def test_registry_reconciliation_runs_after_refresh_before_platforms(
+        self, hass, monkeypatch
+    ):
+        events: list[str] = []
+
+        class _OrderedCoordinator(_FakeCoordinator):
+            def __init__(self, hass, config_entry, client):
+                super().__init__(hass, config_entry, client)
+                self.data["systems"] = {"1": {}}
+                self.async_config_entry_first_refresh = AsyncMock(
+                    side_effect=lambda: events.append("refresh")
+                )
+
+        reconcile = Mock(side_effect=lambda *args: events.append("reconcile"))
+        forward = AsyncMock(side_effect=lambda *args: events.append("forward"))
+        monkeypatch.setattr(
+            integration, "JackeryHomeCloudCoordinator", _OrderedCoordinator
+        )
+        monkeypatch.setattr(
+            integration, "async_reconcile_sensor_entity_registry", reconcile
+        )
+        monkeypatch.setattr(
+            hass.config_entries, "async_forward_entry_setups", forward
+        )
+        entry = _entry(options={CONF_ENABLE_MQTT: False})
+        entry.add_to_hass(hass)
+
+        assert await integration.async_setup_entry(hass, entry) is True
+
+        assert events == ["refresh", "reconcile", "forward"]
+        reconcile.assert_called_once_with(hass, entry, {"1": {}})
 
 
 class TestAsyncSetupEntryMqttEnabled:
@@ -238,6 +270,32 @@ class TestAsyncMigrateEntry:
         result = await integration.async_migrate_entry(hass, entry)
 
         assert result is False
+
+    async def test_minor_version_five_is_marked_as_identity_migration_ready(
+        self, hass
+    ):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                CONF_ACCOUNT: "user@example.com",
+                CONF_PASSWORD: "pw",
+                CONF_PHONE_UID: "ha-1",
+            },
+            options={
+                CONF_ENABLE_MQTT: False,
+                CONF_CRYPTO_KEY: "",
+                CONF_MQTT_DEBUG_RAW: False,
+                CONF_MQTT_POLL_INTERVAL: 60,
+                CONF_MQTT_SYSTEM_ID: None,
+            },
+            version=1,
+            minor_version=5,
+        )
+        entry.add_to_hass(hass)
+
+        assert await integration.async_migrate_entry(hass, entry) is True
+        assert entry.version == 1
+        assert entry.minor_version == 6
 
     async def test_derives_phone_uid_when_missing(self, hass):
         entry = MockConfigEntry(
@@ -371,7 +429,7 @@ class TestAsyncMigrateEntry:
                 CONF_MQTT_SYSTEM_ID: None,
             },
             version=1,
-            minor_version=5,
+            minor_version=6,
         )
         entry.add_to_hass(hass)
         update = AsyncMock()

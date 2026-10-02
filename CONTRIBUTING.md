@@ -185,6 +185,13 @@ edit) without checking who else references the thing being renamed.
   unreleased branch before renaming its `unique_id`. Renaming a released
   entity's `unique_id` silently creates a new entity in users' HA
   instances and orphans dashboards/automations pointing at the old one.
+- Entity unique IDs must never depend on optional or transient payload
+  fields such as REST `deviceNo`, current measurement availability, or MQTT
+  connection state. Every Jackery metric sensor uses the canonical form
+  `system_<system_id>_<sensor_key>` from `entity_identity.sensor_unique_id()`.
+  Changes to that formula or to a shipped sensor key require an explicit,
+  tested entity-registry migration; changing entity construction alone is
+  not sufficient for existing installations.
 
 ## 7. Before pushing
 
