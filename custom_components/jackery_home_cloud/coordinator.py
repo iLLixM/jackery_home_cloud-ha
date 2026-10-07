@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+import math
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -59,10 +60,11 @@ from .const import (
     MQTT_EMS_STANDBY_METER_ID,
     MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS,
     MQTT_LIVE_VALUE_MAX_AGE_SECONDS,
-    MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS,
+    MQTT_TEMPERATURE_VALUE_MAX_AGE_SECONDS,
     MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
     MQTT_PCS_ACTIVE_POWER_METER_ID,
     MQTT_PCS_APPARENT_POWER_METER_ID,
+    MQTT_PCS_HEAT_SINK_TEMPERATURE_METER_ID,
     MQTT_PCS_PV1_POWER_METER_ID,
     MQTT_PCS_PV2_POWER_METER_ID,
     TREND_DATE_FORMAT,
@@ -125,10 +127,11 @@ _MQTT_FRESHNESS_GATED_POWER_KEYS: frozenset[str] = frozenset(
         "ems_on_grid_power_mqtt",
     }
 )
-_MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS: frozenset[str] = frozenset(
+_MQTT_FRESHNESS_GATED_TEMPERATURE_KEYS: frozenset[str] = frozenset(
     {
         "bms1_temperature_ambient_mqtt",
         "bms1_temperature_max_cell_mqtt",
+        "heat_sink_temperature_mqtt",
     }
 )
 _MQTT_FRESHNESS_GATED_DAILY_ENERGY_KEYS: frozenset[str] = frozenset(
@@ -162,6 +165,8 @@ _FAST_PCS_METER_IDS: tuple[str, ...] = (
     MQTT_PCS_ACTIVE_POWER_METER_ID,
 )
 _FAST_BMS1_METER_IDS: tuple[str, ...] = (MQTT_BMS1_BATTERY_POWER_METER_ID,)
+
+_SLOW_PCS_METER_IDS: tuple[str, ...] = (MQTT_PCS_HEAT_SINK_TEMPERATURE_METER_ID,)
 
 _SLOW_BMS1_METER_IDS: tuple[str, ...] = (
     MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID,
@@ -766,9 +771,13 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Slow periodic group: cumulative energy totals."""
         await self._async_request_meter_values(ems_meter_ids=_TOTALS_EMS_METER_IDS, log_label="totals")
 
-    async def async_request_slow_bms1_live_meter_values(self) -> None:
-        """Slow periodic group: BMS1 temperature readings."""
-        await self._async_request_meter_values(bms1_meter_ids=_SLOW_BMS1_METER_IDS, log_label="slow_bms1")
+    async def async_request_temperature_live_meter_values(self) -> None:
+        """Slow periodic group: BMS1 and heat sink temperature readings."""
+        await self._async_request_meter_values(
+            pcs_meter_ids=_SLOW_PCS_METER_IDS,
+            bms1_meter_ids=_SLOW_BMS1_METER_IDS,
+            log_label="temperature",
+        )
 
     async def async_request_config_live_meter_values(self) -> None:
         """Configuration/settings group: only requested on connect and after a write."""
@@ -793,7 +802,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 *_CONFIG_EMS_METER_IDS,
                 *_SCHEDULE_EMS_METER_IDS,
             ),
-            pcs_meter_ids=_FAST_PCS_METER_IDS,
+            pcs_meter_ids=(*_FAST_PCS_METER_IDS, *_SLOW_PCS_METER_IDS),
             bms1_meter_ids=(*_FAST_BMS1_METER_IDS, *_SLOW_BMS1_METER_IDS),
             log_label="all",
         )
@@ -1313,6 +1322,15 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=MQTT_BMS1_TEMPERATURE_MAX_CELL_METER_ID,
             dev_sn_prefix="bms1",
         )
+        # Unlike the BMS temperatures, heatSinkT is already in °C.
+        heat_sink_temperature = extract_ems_meter_value(
+            payload,
+            device_serial=gw_sn,
+            meter_id=MQTT_PCS_HEAT_SINK_TEMPERATURE_METER_ID,
+            dev_sn_prefix="pcs",
+        )
+        if heat_sink_temperature is not None and not math.isfinite(heat_sink_temperature):
+            heat_sink_temperature = None
         other_load_power = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,
@@ -1405,6 +1423,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and battery_power_bms1 is None
             and bms1_temperature_ambient_raw is None
             and bms1_temperature_max_cell_raw is None
+            and heat_sink_temperature is None
             and other_load_power is None
             and ems_other_load_power_l1 is None
             and ems_on_grid_power is None
@@ -1791,6 +1810,20 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 MQTT_BMS1_TEMPERATURE_MAX_CELL_METER_ID,
                 bms1_temperature_max_cell_raw,
                 bms1_temperature_max_cell,
+            )
+
+        if heat_sink_temperature is not None:
+            updated.update(
+                {
+                    "heat_sink_temperature_mqtt": heat_sink_temperature,
+                    "heat_sink_temperature_mqtt_at": received_at,
+                }
+            )
+            _LOGGER.debug(
+                "Accepted MQTT heat sink temperature for %s from meter %s: %s °C",
+                system_id,
+                MQTT_PCS_HEAT_SINK_TEMPERATURE_METER_ID,
+                heat_sink_temperature,
             )
 
         if other_load_power is not None:
@@ -2232,7 +2265,7 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key in (
             _MQTT_FRESHNESS_GATED_ENERGY_KEYS
             | _MQTT_FRESHNESS_GATED_POWER_KEYS
-            | _MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS
+            | _MQTT_FRESHNESS_GATED_TEMPERATURE_KEYS
         ):
             # These top-level names are either explicitly suffixed `_mqtt`
             # or are MQTT-only cumulative counters, so no REST value can be
@@ -2512,17 +2545,17 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 merged[key] = value
                 mqtt_live[key] = {"value": value, "source": "mqtt"}
 
-        # BMS1 temperatures use the slow 300-second polling group. Their own
-        # freshness window deliberately spans three poll cycles instead of the
+        # BMS1 and heat sink temperatures share the slow 300-second poll.
+        # Their freshness window spans three poll cycles instead of the
         # 120-second limit used for fast power/SOC samples.
-        for key in _MQTT_FRESHNESS_GATED_SLOW_BMS1_KEYS:
+        for key in _MQTT_FRESHNESS_GATED_TEMPERATURE_KEYS:
             timestamp = live.get(f"{key}_at")
             value = _coerce_float(live.get(key))
             if (
                 value is not None
                 and timestamp is not None
                 and (now - timestamp).total_seconds()
-                <= MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS
+                <= MQTT_TEMPERATURE_VALUE_MAX_AGE_SECONDS
             ):
                 merged[key] = value
                 mqtt_live[key] = {"value": value, "source": "mqtt"}

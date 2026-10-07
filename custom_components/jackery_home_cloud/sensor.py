@@ -261,6 +261,18 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_max_cell_mqtt")),
     ),
     JackeryMetricDescription(
+        key="heat_sink_temperature",
+        translation_key="heat_sink_temperature",
+        name="Heat sink temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        requires_mqtt=True,
+        # PROPERTY_MAP: "50894849": "HB-PCS-MODEL_heatSinkT".
+        # Confirmed direct °C value; do not apply the BMS / 10 scaling.
+        value_fn=lambda bundle: _coerce_float(bundle.get("heat_sink_temperature_mqtt")),
+    ),
+    JackeryMetricDescription(
         key="battery_energy_remaining",
         translation_key="battery_energy_remaining",
         name="Battery energy remaining",

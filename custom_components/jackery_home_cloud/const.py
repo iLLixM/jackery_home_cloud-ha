@@ -77,10 +77,11 @@ MQTT_CONFIG_RECONCILE_INTERVAL_SECONDS = 1800
 # value, or the power/SOC sensors it gates will flap between MQTT and REST
 # every poll cycle.
 MQTT_LIVE_POWER_VALUE_MAX_AGE_SECONDS = 120
-# BMS1 temperatures are sampled on the fixed 300-second slow poll. Keep three
+# BMS1 and heat sink temperatures share the fixed 300-second slow poll. Keep three
 # poll cycles of headroom so one missed response does not make the sensors
 # unavailable between successful measurements.
-MQTT_SLOW_BMS1_VALUE_MAX_AGE_SECONDS = 900
+MQTT_TEMPERATURE_VALUE_MAX_AGE_SECONDS = 900
+MQTT_TEMPERATURE_POLL_INTERVAL_SECONDS = 300
 MQTT_EMS_BATTERY_CHARGED_TODAY_METER_ID = "16952321"
 MQTT_EMS_BATTERY_DISCHARGED_TODAY_METER_ID = "16953345"
 MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID = "16964609"
@@ -144,6 +145,10 @@ MQTT_BMS1_TEMPERATURE_AMBIENT_SCALE = 10.0
 # PROPERTY_MAP: "33614849": "HB-BMS-MODEL_maxCellT" (maximum cell temperature)
 MQTT_BMS1_TEMPERATURE_MAX_CELL_METER_ID: str = "33614849"
 MQTT_BMS1_TEMPERATURE_MAX_CELL_SCALE = 10.0
+
+# Confirmed by the user's MQTT trace: direct temperature in °C, no scaling.
+# PROPERTY_MAP: "50894849": "HB-PCS-MODEL_heatSinkT"
+MQTT_PCS_HEAT_SINK_TEMPERATURE_METER_ID: str = "50894849"
 
 # Household load power, signed like REST other_load_power itself. It has a
 # different physical boundary from PCS active power L1 and can match it only

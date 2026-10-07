@@ -191,7 +191,7 @@ class TestFastPowerPolling:
         assert meter_lists[f"pcs_{PRIMARY_SERIAL}"] == list(_FAST_PCS_METER_IDS)
 
 
-class TestBms1Temperatures:
+class TestTemperatures:
     async def test_slow_poll_requests_maximum_instead_of_average_temperature(self):
         coordinator = _make_coordinator()
         mqtt_client = SimpleNamespace(async_publish_json=AsyncMock())
@@ -199,10 +199,13 @@ class TestBms1Temperatures:
             runtime_data=SimpleNamespace(mqtt_client=mqtt_client)
         )
 
-        await coordinator.async_request_slow_bms1_live_meter_values()
+        await coordinator.async_request_temperature_live_meter_values()
 
         _, payload = mqtt_client.async_publish_json.await_args.args
         assert payload["info"]["dev_list"] == [{
+            "dev_sn": f"pcs_{PRIMARY_SERIAL}",
+            "meter_list": ["50894849"],
+        }, {
             "dev_sn": f"bms1_{PRIMARY_SERIAL}",
             "meter_list": ["33619969", "33614849"],
         }]
@@ -210,9 +213,21 @@ class TestBms1Temperatures:
         await coordinator.async_request_fast_live_meter_values()
         _, payload = mqtt_client.async_publish_json.await_args.args
         for device in payload["info"]["dev_list"]:
-            assert not {"33618945", "33614849", "33619969"}.intersection(
+            assert not {"33618945", "33614849", "33619969", "50894849"}.intersection(
                 device["meter_list"]
             )
+
+        # Reconnection requests all groups, including the slow PCS meter.
+        mqtt_client.async_publish_json.reset_mock()
+        await coordinator.async_request_live_meter_values()
+        mqtt_client.async_publish_json.assert_awaited_once()
+        _, payload = mqtt_client.async_publish_json.await_args.args
+        meter_lists = {
+            device["dev_sn"]: device["meter_list"]
+            for device in payload["info"]["dev_list"]
+        }
+        assert meter_lists[f"pcs_{PRIMARY_SERIAL}"].count("50894849") == 1
+        assert "50894849" not in meter_lists[f"bms1_{PRIMARY_SERIAL}"]
 
     @pytest.mark.parametrize("cmd", ["data_get", "data_report", "data_set"])
     @pytest.mark.parametrize("raw, expected", [("315.000000", 31.5), ("0", 0.0), ("-55", -5.5)])
@@ -267,6 +282,76 @@ class TestBms1Temperatures:
         assert "bms1_temperature_max_cell_mqtt" not in (
             coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
         )
+
+
+class TestHeatSinkTemperature:
+    @staticmethod
+    def _message(raw, *, cmd="data_get", serial=PRIMARY_SERIAL, prefix="pcs"):
+        return {"payload_json": {
+            "cmd": cmd,
+            "gw_sn": serial,
+            "info": {"dev_list": [{
+                "dev_sn": f"{prefix}_{serial}",
+                "meter_list": [["50894849", raw]],
+            }]},
+        }}
+
+    @pytest.mark.parametrize("cmd", ["data_get", "data_report", "data_set"])
+    @pytest.mark.parametrize("raw, expected", [
+        ("42.500000", 42.5), ("0", 0.0), ("-5.5", -5.5),
+    ])
+    @freeze_time("2026-01-01 12:00:00")
+    def test_temperature_only_message_reaches_sensor_without_scaling(self, cmd, raw, expected):
+        """Heat sink values must not inherit the BMS raw / 10 conversion."""
+        coordinator = _make_coordinator()
+        coordinator._ingest_mqtt_live_values(self._message(raw, cmd=cmd))
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live["heat_sink_temperature_mqtt"] == expected
+        assert live["heat_sink_temperature_mqtt_at"] == datetime(2026, 1, 1, 12, tzinfo=UTC)
+        coordinator.data["systems"][PRIMARY_SYSTEM] = (
+            coordinator._apply_mqtt_live_values_to_bundle(PRIMARY_SYSTEM, {})
+        )
+        description = next(
+            d for d in SYSTEM_SENSOR_DESCRIPTIONS if d.key == "heat_sink_temperature"
+        )
+        sensor = JackeryMetricSensor(coordinator, PRIMARY_SYSTEM, description)
+        assert sensor.native_value == expected
+        assert sensor.unique_id == f"system_{PRIMARY_SYSTEM}_heat_sink_temperature"
+        assert description.name == "Heat sink temperature"
+        assert description.translation_key == "heat_sink_temperature"
+        assert description.native_unit_of_measurement == "°C"
+        assert description.device_class == "temperature"
+        assert description.state_class == "measurement"
+        assert description.requires_mqtt
+        assert description.entity_registry_enabled_default
+
+    @pytest.mark.parametrize("raw", ["invalid", "", None, "nan", "inf", "-inf"])
+    @freeze_time("2026-01-01 12:00:00")
+    def test_invalid_sample_does_not_replace_valid_sample_or_refresh_timestamp(self, raw):
+        coordinator = _make_coordinator()
+        old_timestamp = datetime(2026, 1, 1, 11, 55, tzinfo=UTC)
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {
+            "heat_sink_temperature_mqtt": 40.0,
+            "heat_sink_temperature_mqtt_at": old_timestamp,
+        }
+        coordinator._ingest_mqtt_live_values(self._message(raw))
+        assert coordinator._mqtt_live_values[PRIMARY_SYSTEM] == {
+            "heat_sink_temperature_mqtt": 40.0,
+            "heat_sink_temperature_mqtt_at": old_timestamp,
+        }
+
+    @pytest.mark.parametrize("serial, prefix", [
+        (SECONDARY_SERIAL, "pcs"),
+        (PRIMARY_SERIAL, "bms1"),
+        (PRIMARY_SERIAL, "ems"),
+        (PRIMARY_SERIAL, "pcs2"),
+    ])
+    def test_other_systems_and_wrong_device_nodes_are_ignored(self, serial, prefix):
+        coordinator = _make_coordinator()
+        coordinator._ingest_mqtt_live_values(
+            self._message("42", serial=serial, prefix=prefix)
+        )
+        assert coordinator._mqtt_live_values == {}
 
 
 class TestValidatedPcsActivePowerL1Pipeline:

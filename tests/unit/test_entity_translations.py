@@ -94,6 +94,16 @@ def test_metric_sensor_does_not_override_translated_name():
     assert entity.entity_description.translation_key == description.key
 
 
+def test_heat_sink_temperature_display_names_omit_pcs():
+    names = {
+        language: translation["entity"]["sensor"]["heat_sink_temperature"]["name"]
+        for language, translation in _translations().items()
+    }
+    assert names["de"] == "Kühlkörpertemperatur"
+    assert names["en"] == "Heat sink temperature"
+    assert all("PCS" not in name.upper() for name in names.values())
+
+
 def test_all_non_metric_entities_use_translation_keys_without_names():
     coordinator = SimpleNamespace(data={"systems": {}})
     for domain, classes in ENTITY_CLASSES.items():

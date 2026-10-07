@@ -64,6 +64,7 @@ class _FakeCoordinator:
         self.async_handle_mqtt_message = AsyncMock()
         self.async_request_fast_live_meter_values = AsyncMock()
         self.async_request_totals_live_meter_values = AsyncMock()
+        self.async_request_temperature_live_meter_values = AsyncMock()
         self.async_request_config_live_meter_values = AsyncMock()
 
 
@@ -179,13 +180,33 @@ class TestAsyncSetupEntryMqttEnabled:
         assert mqtt_client.device_serial == "SN1"
         assert entry.runtime_data.mqtt_client is mqtt_client
         # Four async_track_time_interval unsub callbacks registered (fast +
-        # slow BMS1 + totals + config reconciliation polling) via entry.async_on_unload.
+        # temperatures + totals + config reconciliation polling) via entry.async_on_unload.
         assert len(entry._on_unload) == 4
         # Cancel the real timers registered above so they don't linger past
         # this test (async_track_time_interval schedules a real asyncio
         # timer; nothing else in this direct-call test would ever cancel it).
         for unsub in list(entry._on_unload):
             unsub()
+
+    async def test_temperature_timer_uses_slow_cadence_and_requests_temperature_group(
+        self, hass, monkeypatch
+    ):
+        monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", AsyncMock())
+        tracker = Mock(side_effect=lambda *args: Mock())
+        monkeypatch.setattr(integration, "async_track_time_interval", tracker)
+        entry = _entry(options={CONF_ENABLE_MQTT: True, CONF_CRYPTO_KEY: "0123456789abcdef"})
+        entry.add_to_hass(hass)
+
+        assert await integration.async_setup_entry(hass, entry) is True
+        temperature_calls = [
+            call for call in tracker.call_args_list
+            if call.args[1].__name__ == "_async_poll_temperature_live_meters"
+        ]
+        assert len(temperature_calls) == 1
+        _, callback, interval = temperature_calls[0].args
+        assert interval.total_seconds() == 300
+        await callback(None)
+        entry.runtime_data.coordinator.async_request_temperature_live_meter_values.assert_awaited_once()
 
     async def test_crypto_key_error_is_handled_gracefully_not_raised(self, hass, monkeypatch):
         monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", AsyncMock())
