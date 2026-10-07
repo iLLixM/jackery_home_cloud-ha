@@ -248,16 +248,17 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_ambient_mqtt")),
     ),
     JackeryMetricDescription(
-        key="bms1_temperature_avg_cell",
-        translation_key="bms1_temperature_avg_cell",
-        name="BMS1 average cell temperature",
+        key="bms1_temperature_max_cell",
+        translation_key="bms1_temperature_max_cell",
+        name="BMS1 maximum cell temperature",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         requires_mqtt=True,
-        # Average cell temperature of the battery pack. Confirmed via MQTT traces.
-        # PROPERTY_MAP: "33618945": "HB-BMS-MODEL_avgCellT"
-        value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_avg_cell_mqtt")),
+        # Maximum cell temperature of the primary battery pack (BMS1 only).
+        # Mapping supplied in protocol review; scale documented in const.py.
+        # PROPERTY_MAP: "33614849": "HB-BMS-MODEL_maxCellT"
+        value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_max_cell_mqtt")),
     ),
     JackeryMetricDescription(
         key="battery_energy_remaining",

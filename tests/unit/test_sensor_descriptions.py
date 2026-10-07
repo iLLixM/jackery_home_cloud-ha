@@ -72,7 +72,7 @@ EXPECTED_SENSOR_KEYS = frozenset(
         "mqtt_last_topic",
         "mqtt_last_message_at",
         "bms1_temperature_ambient",
-        "bms1_temperature_avg_cell",
+        "bms1_temperature_max_cell",
     }
 )
 

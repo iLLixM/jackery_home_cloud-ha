@@ -64,7 +64,7 @@ EXPECTED_FRESHNESS_GATED_POWER_KEYS = {
 }
 EXPECTED_FRESHNESS_GATED_SLOW_BMS1_KEYS = {
     "bms1_temperature_ambient_mqtt",
-    "bms1_temperature_avg_cell_mqtt",
+    "bms1_temperature_max_cell_mqtt",
 }
 EXPECTED_FRESHNESS_GATED_DAILY_ENERGY_KEYS = {
     "battery_energy_charged_today",

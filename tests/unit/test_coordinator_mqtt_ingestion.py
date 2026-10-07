@@ -191,6 +191,84 @@ class TestFastPowerPolling:
         assert meter_lists[f"pcs_{PRIMARY_SERIAL}"] == list(_FAST_PCS_METER_IDS)
 
 
+class TestBms1Temperatures:
+    async def test_slow_poll_requests_maximum_instead_of_average_temperature(self):
+        coordinator = _make_coordinator()
+        mqtt_client = SimpleNamespace(async_publish_json=AsyncMock())
+        coordinator.config_entry = SimpleNamespace(
+            runtime_data=SimpleNamespace(mqtt_client=mqtt_client)
+        )
+
+        await coordinator.async_request_slow_bms1_live_meter_values()
+
+        _, payload = mqtt_client.async_publish_json.await_args.args
+        assert payload["info"]["dev_list"] == [{
+            "dev_sn": f"bms1_{PRIMARY_SERIAL}",
+            "meter_list": ["33619969", "33614849"],
+        }]
+        mqtt_client.async_publish_json.reset_mock()
+        await coordinator.async_request_fast_live_meter_values()
+        _, payload = mqtt_client.async_publish_json.await_args.args
+        for device in payload["info"]["dev_list"]:
+            assert not {"33618945", "33614849", "33619969"}.intersection(
+                device["meter_list"]
+            )
+
+    @pytest.mark.parametrize("cmd", ["data_get", "data_report", "data_set"])
+    @pytest.mark.parametrize("raw, expected", [("315.000000", 31.5), ("0", 0.0), ("-55", -5.5)])
+    @pytest.mark.parametrize("meter, key", [
+        ("33614849", "bms1_temperature_max_cell"),
+        ("33619969", "bms1_temperature_ambient"),
+    ])
+    @freeze_time("2026-01-01 12:00:00")
+    def test_temperature_only_reply_reaches_sensor(self, cmd, raw, expected, meter, key):
+        """A slow reply has no power fields: it must survive the early guard."""
+        coordinator = _make_coordinator()
+        coordinator._ingest_mqtt_live_values({"payload_json": {
+            "cmd": cmd,
+            "gw_sn": PRIMARY_SERIAL,
+            "info": {"dev_list": [{
+                "dev_sn": f"bms1_{PRIMARY_SERIAL}",
+                "meter_list": [[meter, raw]],
+            }]},
+        }})
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live[f"{key}_mqtt"] == expected
+        assert live[f"{key}_mqtt_at"] == datetime(2026, 1, 1, 12, tzinfo=UTC)
+        merged = coordinator._apply_mqtt_live_values_to_bundle(
+            PRIMARY_SYSTEM, coordinator.data["systems"][PRIMARY_SYSTEM]
+        )
+        coordinator.data["systems"][PRIMARY_SYSTEM] = merged
+        description = next(d for d in SYSTEM_SENSOR_DESCRIPTIONS if d.key == key)
+        sensor = JackeryMetricSensor(coordinator, PRIMARY_SYSTEM, description)
+        assert sensor.native_value == expected
+        assert sensor.unique_id == f"system_{PRIMARY_SYSTEM}_{key}"
+        assert description.native_unit_of_measurement == "°C"
+        assert description.device_class == "temperature"
+        assert description.state_class == "measurement"
+        assert description.requires_mqtt
+
+    @pytest.mark.parametrize("prefix, meter, raw", [
+        ("bms1", "33618945", "261"),  # Removed average meter.
+        ("bms2", "33614849", "400"),  # Another battery pack.
+        ("bms1", "33614849", "invalid"),
+    ])
+    def test_unrelated_or_invalid_measurements_do_not_supply_maximum(self, prefix, meter, raw):
+        coordinator = _make_coordinator()
+        coordinator._ingest_mqtt_live_values({"payload_json": {
+            "cmd": "data_get",
+            "gw_sn": PRIMARY_SERIAL,
+            "info": {"dev_list": [{
+                "dev_sn": f"{prefix}_{PRIMARY_SERIAL}",
+                "meter_list": [[meter, raw]],
+            }]},
+        }})
+        assert "bms1_temperature_max_cell_mqtt" not in (
+            coordinator._mqtt_live_values.get(PRIMARY_SYSTEM, {})
+        )
+
+
 class TestValidatedPcsActivePowerL1Pipeline:
     @pytest.mark.parametrize("raw_value", ("1403", "-1403", "5", "-5", "0"))
     @freeze_time("2026-01-01 12:00:00")

@@ -145,7 +145,7 @@
       "battery_power": {"name": "Batterieleistung"},
       "battery_power_bms1": {"name": "Batterieleistung BMS1"},
       "bms1_temperature_ambient": {"name": "BMS1 Umgebungstemperatur"},
-      "bms1_temperature_avg_cell": {"name": "BMS1 durchschnittliche Zelltemperatur"},
+      "bms1_temperature_max_cell": {"name": "BMS1 maximale Zelltemperatur"},
       "battery_energy_remaining": {"name": "Verbleibende Batterieenergie"},
       "pv1_power": {"name": "PV1-Leistung"},
       "pv2_power": {"name": "PV2-Leistung"},

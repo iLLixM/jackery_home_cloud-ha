@@ -136,14 +136,14 @@ MQTT_EMS_BATTERY_POWER_METER_ID: str = "16931841"
 MQTT_BMS1_BATTERY_POWER_METER_ID: str = "33659905"
 
 # BMS1 temperature readings: ambient temperature around/in the battery pack
-# and average cell temperature of the battery. Both raw values are scaled by / 10.
+# and maximum cell temperature of the battery. Both raw values are scaled by / 10.
 # Confirmed: value validated from observed MQTT traffic.
 # PROPERTY_MAP: "33619969": "HB-BMS-MODEL_ambT" (ambient temperature)
 MQTT_BMS1_TEMPERATURE_AMBIENT_METER_ID: str = "33619969"
 MQTT_BMS1_TEMPERATURE_AMBIENT_SCALE = 10.0
-# PROPERTY_MAP: "33618945": "HB-BMS-MODEL_avgCellT" (average cell temperature)
-MQTT_BMS1_TEMPERATURE_AVG_CELL_METER_ID: str = "33618945"
-MQTT_BMS1_TEMPERATURE_AVG_CELL_SCALE = 10.0
+# PROPERTY_MAP: "33614849": "HB-BMS-MODEL_maxCellT" (maximum cell temperature)
+MQTT_BMS1_TEMPERATURE_MAX_CELL_METER_ID: str = "33614849"
+MQTT_BMS1_TEMPERATURE_MAX_CELL_SCALE = 10.0
 
 # Household load power, signed like REST other_load_power itself. It has a
 # different physical boundary from PCS active power L1 and can match it only

@@ -82,6 +82,18 @@ the AC-socket power with its sign reversed. This is useful when an external
 AC-coupled solar inverter feeds the Jackery AC socket: feed-in is positive on
 the inverted sensor, while consumption is negative.
 
+### BMS1 temperature telemetry (current development)
+
+The integration polls BMS1 ambient temperature (`33619969`) and maximum cell
+temperature (`33614849 / HB-BMS-MODEL_maxCellT`) every 300 seconds. Values are
+converted to °C using raw / 10 and expire after 900 seconds without a new
+measurement. The maximum-cell scale follows the existing BMS temperature
+encoding and needs confirmation against a real device response.
+
+This is the maximum across cells reported by **BMS1**, not a maximum across
+all installed battery packs. Alarm automations should account for the polling
+delay and handle missing or stale telemetry.
+
 ### Daily energy entities
 
 Daily energy sensors are derived from observed Jackery cloud trend endpoints:
