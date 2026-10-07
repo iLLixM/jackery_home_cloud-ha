@@ -9,6 +9,7 @@ extraction).
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -66,6 +67,45 @@ def _make_payload(cmd: str, dev_sn: str, meter_list: list) -> dict:
 
 
 class TestExtractEmsMeterValue:
+    @pytest.mark.parametrize("cmd", ["data_report", "data_get", "data_set"])
+    @pytest.mark.parametrize("prefix", ["ems", "pcs", "bms1"])
+    @pytest.mark.parametrize("raw", [
+        "nan", "NaN", "+nan", "-nan", "inf", "+inf", "-inf",
+        "Infinity", "+Infinity", "-Infinity", "1e309", "-1e309",
+        float("nan"), float("inf"), float("-inf"),
+    ])
+    def test_non_finite_values_are_rejected(self, cmd, prefix, raw):
+        """Reject non-finite results, including overflow and numeric payloads."""
+        payload = _make_payload(cmd, f"{prefix}_SN1", [["123", raw]])
+        assert extract_ems_meter_value(
+            payload, device_serial="SN1", meter_id="123", dev_sn_prefix=prefix
+        ) is None
+
+    @pytest.mark.parametrize("raw", [
+        "0", "-0", "1", "-1", "45.6", "1e3", "-2.5e2",
+        "1e308", " 12.5 ", 0, -12.5,
+    ])
+    def test_finite_values_keep_their_float_representation(self, raw):
+        payload = _make_payload("data_get", "ems_SN1", [["123", raw]])
+        value = extract_ems_meter_value(payload, device_serial="SN1", meter_id="123")
+        assert isinstance(value, float)
+        assert math.isfinite(value)
+        assert value == float(raw)
+        assert math.copysign(1.0, value) == math.copysign(1.0, float(raw))
+
+    @pytest.mark.parametrize("raw", ["", "invalid", None, True, False])
+    def test_malformed_numeric_values_remain_rejected(self, raw):
+        payload = _make_payload("data_get", "ems_SN1", [["123", raw]])
+        assert extract_ems_meter_value(payload, device_serial="SN1", meter_id="123") is None
+
+    @pytest.mark.parametrize("raw", ["0007", "06150715", "nan", "Infinity"])
+    def test_raw_extraction_is_not_numeric_validation(self, raw):
+        """Opaque protocol strings must not be changed by numeric hardening."""
+        payload = _make_payload("data_get", "ems_SN1", [["123", raw]])
+        assert extract_ems_meter_raw_value(
+            payload, device_serial="SN1", meter_id="123"
+        ) == raw
+
     @pytest.mark.parametrize("cmd", ["data_report", "data_get", "data_set"])
     def test_accepted_cmds_return_value(self, cmd):
         payload = _make_payload(cmd, "ems_SN1", [["123", "45.6"]])

@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
-import math
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1329,8 +1328,6 @@ class JackeryHomeCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_id=MQTT_PCS_HEAT_SINK_TEMPERATURE_METER_ID,
             dev_sn_prefix="pcs",
         )
-        if heat_sink_temperature is not None and not math.isfinite(heat_sink_temperature):
-            heat_sink_temperature = None
         other_load_power = extract_ems_meter_value(
             payload,
             device_serial=gw_sn,

@@ -16,6 +16,7 @@ item 6, "Event-driven write verification") - no `hass` needed. Built via
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 import logging
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from freezegun import freeze_time
 import pytest
 
 from custom_components.jackery_home_cloud.const import (
+    MQTT_EMS_AUTO_STANDBY_METER_ID,
     MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID,
     MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID,
     MQTT_EMS_BATTERY_POWER_METER_ID,
@@ -36,6 +38,11 @@ from custom_components.jackery_home_cloud.const import (
     MQTT_EMS_ON_GRID_POWER_METER_ID,
     MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID,
     MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID,
+    MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID,
+    MQTT_EMS_PV_ENERGY_TOTAL_METER_ID,
+    MQTT_EMS_STANDBY_METER_ID,
+    MQTT_EMS_WORK_MODE_METER_ID,
+    MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID,
     MQTT_PCS_ACTIVE_POWER_L1_METER_ID,
     MQTT_PCS_ACTIVE_POWER_METER_ID,
     MQTT_PCS_APPARENT_POWER_METER_ID,
@@ -352,6 +359,112 @@ class TestHeatSinkTemperature:
             self._message("42", serial=serial, prefix=prefix)
         )
         assert coordinator._mqtt_live_values == {}
+
+
+class TestNonFiniteMqttValues:
+    @staticmethod
+    def _message(prefix, meters, cmd="data_get"):
+        return {"payload_json": {
+            "cmd": cmd,
+            "gw_sn": PRIMARY_SERIAL,
+            "info": {"dev_list": [{
+                "dev_sn": f"{prefix}_{PRIMARY_SERIAL}",
+                "meter_list": meters,
+            }]},
+        }}
+
+    @pytest.mark.parametrize("cmd", ["data_get", "data_report", "data_set"])
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "1e309"])
+    @pytest.mark.parametrize("meter, key", [
+        (MQTT_EMS_WORK_MODE_METER_ID, "work_mode_raw"),
+        (MQTT_EMS_STANDBY_METER_ID, "standby_raw"),
+        (MQTT_EMS_OUTPUT_POWER_LIMIT_METER_ID, "output_power_limit_raw"),
+        (MQTT_EMS_AUTO_STANDBY_METER_ID, "auto_standby_raw"),
+    ])
+    @freeze_time("2026-01-01 12:00:00")
+    def test_invalid_integer_meter_keeps_cache_and_does_not_abort_valid_meter(
+        self, cmd, raw, meter, key
+    ):
+        """No int(NaN/Inf) exception may discard another meter in the payload."""
+        coordinator = _make_coordinator()
+        old_timestamp = datetime(2026, 1, 1, 11, 55, tzinfo=UTC)
+        coordinator._mqtt_live_values[PRIMARY_SYSTEM] = {
+            key: "1", f"{key}_at": old_timestamp,
+        }
+        event = asyncio.Event()
+        coordinator._mqtt_update_events[PRIMARY_SYSTEM] = event
+
+        coordinator._ingest_mqtt_live_values(self._message("ems", [
+            [meter, raw], [MQTT_EMS_OTHER_LOAD_POWER_L1_METER_ID, "123.5"],
+        ], cmd))
+
+        live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+        assert live[key] == "1"
+        assert live[f"{key}_at"] == old_timestamp
+        assert live["ems_other_load_power_l1_mqtt"] == 123.5
+        assert live["ems_other_load_power_l1_mqtt_at"] == datetime(2026, 1, 1, 12, tzinfo=UTC)
+        assert event.is_set()
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "1e309"])
+    @pytest.mark.parametrize("prefix, meter, key, valid_raw", [
+        ("bms1", "33619969", "bms1_temperature_ambient_mqtt", "250"),
+        ("bms1", "33614849", "bms1_temperature_max_cell_mqtt", "250"),
+        ("pcs", "50894849", "heat_sink_temperature_mqtt", "25"),
+    ])
+    def test_invalid_temperature_does_not_extend_original_freshness(
+        self, raw, prefix, meter, key, valid_raw
+    ):
+        """Rejected samples preserve the cache, but cannot keep it fresh forever."""
+        coordinator = _make_coordinator()
+        start = datetime(2026, 1, 1, 12, tzinfo=UTC)
+        with freeze_time(start) as clock:
+            coordinator._ingest_mqtt_live_values(
+                self._message(prefix, [[meter, valid_raw]])
+            )
+            bundle = coordinator._apply_mqtt_live_values_to_bundle(PRIMARY_SYSTEM, {})
+            for age in (300, 900, 901):
+                clock.move_to(start + timedelta(seconds=age))
+                coordinator._ingest_mqtt_live_values(
+                    self._message(prefix, [[meter, raw]])
+                )
+                live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+                assert live[key] == 25.0
+                assert live[f"{key}_at"] == start
+                bundle = coordinator._apply_mqtt_live_values_to_bundle(PRIMARY_SYSTEM, bundle)
+                if age <= 900:
+                    assert bundle[key] == 25.0
+                    assert bundle["mqtt_live"][key]["value"] == 25.0
+                else:
+                    assert key not in bundle
+                    # With no remaining live measurements, the entire
+                    # provenance mapping is removed rather than kept empty.
+                    assert key not in bundle.get("mqtt_live", {})
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "1e309"])
+    @pytest.mark.parametrize("meter, key", [
+        (MQTT_EMS_AC_OUTPUT_ENERGY_IN_METER_ID, "ac_output_energy_in"),
+        (MQTT_EMS_AC_OUTPUT_ENERGY_OUT_METER_ID, "ac_output_energy_out"),
+        (MQTT_EMS_BATTERY_CHARGED_TOTAL_METER_ID, "battery_energy_charged_total"),
+        (MQTT_EMS_BATTERY_DISCHARGED_TOTAL_METER_ID, "battery_energy_discharged_total"),
+        (MQTT_EMS_PV1_ENERGY_TOTAL_METER_ID, "pv1_energy_total"),
+        (MQTT_EMS_PV2_ENERGY_TOTAL_METER_ID, "pv2_energy_total"),
+        (MQTT_EMS_PV_ENERGY_TOTAL_METER_ID, "pv_energy_total"),
+    ])
+    def test_non_finite_total_cannot_poison_decrease_guard(self, raw, meter, key):
+        """12 -> invalid -> 13 must yield 12 -> 12 -> 13, never a stuck Inf."""
+        coordinator = _make_coordinator()
+        start = datetime(2026, 1, 1, 12, tzinfo=UTC)
+        with freeze_time(start) as clock:
+            coordinator._ingest_mqtt_live_values(self._message("ems", [[meter, "12"]]))
+            previous = dict(coordinator._mqtt_live_values[PRIMARY_SYSTEM])
+            clock.tick(60)
+            coordinator._ingest_mqtt_live_values(self._message("ems", [[meter, raw]]))
+            assert coordinator._mqtt_live_values[PRIMARY_SYSTEM] == previous
+            clock.tick(60)
+            coordinator._ingest_mqtt_live_values(self._message("ems", [[meter, "13"]]))
+            live = coordinator._mqtt_live_values[PRIMARY_SYSTEM]
+            assert live[key] == 13.0
+            assert live[f"{key}_at"] == start + timedelta(seconds=120)
 
 
 class TestValidatedPcsActivePowerL1Pipeline:

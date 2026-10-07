@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
+import math
 from typing import Any
 
 
@@ -111,9 +112,11 @@ def extract_ems_meter_value(
     meter_id: str,
     dev_sn_prefix: str = "ems",
 ) -> float | None:
-    """Extract a single meter value from a MQTT meter payload as a float.
+    """Extract a finite float from a numeric MQTT meter, or return None.
 
     See _find_ems_meter_raw_value for the underlying lookup rules.
+    Non-finite samples are invalid telemetry: rejecting them here protects
+    integer conversions, cached values and freshness timestamps in consumers.
     """
     raw = _find_ems_meter_raw_value(
         payload, device_serial=device_serial, meter_id=meter_id, dev_sn_prefix=dev_sn_prefix
@@ -121,9 +124,12 @@ def extract_ems_meter_value(
     if raw is None:
         return None
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         return None
+    # float() also accepts NaN/Infinity and can overflow strings such as 1e309
+    # to infinity. Validate the result, not a list of special-case spellings.
+    return value if math.isfinite(value) else None
 
 
 def extract_ems_meter_raw_value(
