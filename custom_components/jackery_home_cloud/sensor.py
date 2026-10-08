@@ -256,7 +256,7 @@ SYSTEM_SENSOR_DESCRIPTIONS: tuple[JackeryMetricDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         requires_mqtt=True,
         # Maximum cell temperature of the primary battery pack (BMS1 only).
-        # Mapping supplied in protocol review; scale documented in const.py.
+        # Mapping and raw / 10 scaling confirmed by user validation.
         # PROPERTY_MAP: "33614849": "HB-BMS-MODEL_maxCellT"
         value_fn=lambda bundle: _coerce_float(bundle.get("bms1_temperature_max_cell_mqtt")),
     ),

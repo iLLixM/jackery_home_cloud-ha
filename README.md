@@ -17,7 +17,7 @@ See the comprehensive [API documentation](docs/jackery_home_cloud_api_readme.md)
 
 The Home Assistant integration and the associated API and MQTT research were primarily developed and validated with a Jackery HomePower 2000 Ultra.
 
-Current release: `0.4.1`
+Current release: `0.5.0`
 
 The integration is currently able to:
 
@@ -32,6 +32,7 @@ The integration is currently able to:
 - actively poll MQTT live, total-energy, configuration, and schedule meters
 - combine fresh MQTT values with REST fallback data
 - expose system-level and BMS1 battery-power telemetry
+- expose separate PV1/PV2 power and battery/heat sink temperature sensors
 - expose cumulative MQTT energy totals
 - expose MQTT connection and device-status diagnostics
 - control operating modes, battery limits, power limits, AC output, and standby behavior through MQTT
@@ -47,7 +48,7 @@ MQTT support does not use Home Assistant's own MQTT integration. The Jackery MQT
 
 ---
 
-## Features in v0.4.1
+## Features in v0.5.0
 
 ### System-oriented device model
 
@@ -77,18 +78,26 @@ The integration reads current REST system data such as:
 
 Selected existing sensors can prefer fresh MQTT values while continuing to use REST as a fallback when MQTT data is unavailable or stale.
 
+`AC main power` uses the externally validated, signed PCS active-power-L1
+meter (`50397185 / HB-PCS-MODEL_activePL1`) directly when fresh MQTT data is
+available. No MQTT sign reconstruction or standby heuristic is applied.
+REST `acMainPower` remains the fallback.
+
+PV1 power and PV2 power are available as separate MQTT-only sensors, in
+addition to the combined PV power sensor.
+
 An optional, disabled-by-default `eps_load_power_inverted` sensor exposes
 the AC-socket power with its sign reversed. This is useful when an external
 AC-coupled solar inverter feeds the Jackery AC socket: feed-in is positive on
 the inverted sensor, while consumption is negative.
 
-### Temperature telemetry (current development)
+### Temperature telemetry
 
 The integration polls BMS1 ambient temperature (`33619969`) and maximum cell
 temperature (`33614849 / HB-BMS-MODEL_maxCellT`) every 300 seconds. Values are
 converted to °C using raw / 10 and expire after 900 seconds without a new
-measurement. The maximum-cell scale follows the existing BMS temperature
-encoding and needs confirmation against a real device response.
+measurement. The maximum-cell temperature mapping and raw / 10 scaling
+have been validated.
 
 The **Heat sink temperature** sensor reads meter
 `50894849 / HB-PCS-MODEL_heatSinkT` from the PCS device node. Its MQTT value
@@ -136,12 +145,13 @@ The integration supports an option to ignore invalid or expired MQTT TLS certifi
 
 ### Active MQTT polling
 
-Version `0.4.0` introduces grouped MQTT polling:
+MQTT polling is grouped by value type:
 
 - **Fast live values** for responsive power and battery telemetry
-- **Cumulative totals** at a slower interval
-- **Configuration values** requested on connection, entity setup, and after writes
-- **Schedule values** requested on demand
+- **Cumulative totals** every 300 seconds
+- **Temperatures** every 300 seconds, with a 900-second freshness window
+- **Configuration values** requested on connection, entity setup, and after writes, with periodic reconciliation every 1800 seconds
+- **Schedule values** requested on connection and on demand, including after schedule writes
 
 The fast MQTT polling interval can be configured between 5 and 60 seconds.
 
@@ -195,7 +205,7 @@ This reduces the risk of treating a stale cached value as confirmation of a new 
 
 ### Charge and discharge schedules
 
-Version `0.4.0` adds support for reading and managing charge and discharge schedule windows.
+The integration supports reading and managing charge and discharge schedule windows.
 
 The schedule implementation:
 
@@ -262,6 +272,9 @@ These include, depending on device support:
 - Battery power BMS1
 - PV1 power
 - PV2 power
+- BMS1 ambient temperature
+- BMS1 maximum cell temperature
+- Heat sink temperature
 - Battery charged
 - Battery discharged
 - AC-Output energy in
@@ -402,7 +415,8 @@ The live MQTT polling interval can be configured between 5 and 60 seconds.
 
 Use a longer interval to reduce Jackery cloud MQTT traffic. Use a shorter interval only when more responsive values are required.
 
-Cumulative totals use a separate slower interval and are not requested at the same rate as fast live values.
+Cumulative totals and temperatures use separate fixed 300-second polling
+groups and are not requested at the same rate as fast live values.
 
 ### MQTT TLS option
 
@@ -491,13 +505,14 @@ Current and future goals include:
 - MQTT subscriptions are device-specific.
 - The current implementation supports one primary MQTT system per config entry.
 - MQTT values are merged only while they remain within their configured freshness windows.
+- Numeric MQTT parsing rejects non-finite values such as `NaN` and `Infinity` without replacing valid cached readings or refreshing their timestamps.
 - REST remains the fallback source for selected existing sensors.
 - Cumulative MQTT values are protected against unexpected decreases.
 - MQTT total sensors use state restoration.
 - MQTT writes are serialized per system and meter and verified against fresh values where supported.
 - MQTT message processing is isolated defensively so that a failure in one ingest path does not block all other MQTT processing.
 - The API and MQTT protocol are unofficial and may change without notice.
-- Existing entity-registry entries may remain after MQTT is disabled or after unreleased development entity IDs are changed.
+- Existing entity-registry entries may remain after MQTT is disabled.
 
 ### Technical architecture
 
@@ -512,6 +527,7 @@ Jackery Home Cloud REST API
 Jackery Cloud MQTT
 ├── active fast live-value polling
 ├── slower cumulative-energy polling
+├── slower temperature polling
 ├── configuration polling
 ├── schedule polling
 ├── telemetry and data reports
@@ -664,7 +680,6 @@ Security-sensitive findings should be reported privately before technical detail
 
 This is active community software.
 
-Version `0.4.1` builds on the MQTT telemetry and control architecture introduced in v0.4.0. It adds explicit MQTT-system selection, expanded protocol diagnostics, AC-output energy counters, and hardened MQTT freshness and restore handling. Current development uses the externally validated signed PCS active-power-L1 meter directly as the fresh MQTT source for `AC main power`, with REST `acMainPower` retained as fallback.
 
 The integration should still be treated as unofficial software that depends on undocumented interfaces.
 
